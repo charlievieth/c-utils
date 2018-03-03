@@ -1,12 +1,20 @@
 #include <stdio.h>
 #include <string.h>
 
+// static void null_terminate(char *buf, int size) {
+// 	char *p;
+// 	while ((size > 0 && (p = memchr(buf, '\n', size)))) {
+// 		*p = '\0';
+// 		buf = p;
+// 		size -= (int)(p - buf);
+// 	}
+// }
+
 static void null_terminate(char *buf, int size) {
-	char *p;
-	while ((size > 0 && (p = memchr(buf, '\n', size)))) {
-		*p = '\0';
-		buf = p;
-		size -= (int)(p - buf);
+	for (int i = 0; i < size; i++) {
+		if (buf[i] == '\n') {
+			buf[i] = 0;
+		}
 	}
 }
 
