@@ -80,24 +80,56 @@ void char_slice_init(char_slice *a) {
 	a->data = NULL;
 }
 
-bool char_slice_do_grow(char_slice *a, int n) {
-	int cap = a->cap > 0 ? 2*a->cap + n : n;
-	char *data = realloc(a->data, (size_t)cap);
-	if (!data) {
-		free(a->data);
-		assert(a->data);
-		return false;
-	}
-	a->cap = cap;
-	a->data = data;
-	return true;
+#define _slice_do_grow(a, n) do {                              \
+	size_t _cap = ((a)->cap) > 0 ? ((2*(a)->cap) + (n)) : (n); \
+	_cap *= sizeof(*(a)->data);                                \
+	char *_data = realloc((a)->data, _cap);                    \
+	if (!_data) {                                              \
+		free((a)->data);                                       \
+		assert((a)->data);                                     \
+		return false;                                          \
+	}                                                          \
+	(a)->cap = _cap;                                           \
+	(a)->data = _data;                                         \
+	return true;                                               \
+} while(0)
+
+#define _slice_grow(a, n) do {          \
+	if ((n) <= ((a)->cap - (a)->len)) { \
+		return true;                    \
+	}                                   \
+	_slice_do_grow(a, n);               \
+} while(0)
+
+#define _fn_init_slice(NAME)                                       \
+static bool NAME ## _slice_do_grow(NAME ## _slice *a, int n) {     \
+	_slice_do_grow((a), (n));                                      \
+}                                                                  \
+                                                                   \
+static inline bool NAME ## _slice_grow(NAME ## _slice *a, int n) { \
+	if ((n) <= ((a)->cap - (a)->len)) {                            \
+		return true;                                               \
+	}                                                              \
+	return NAME ## _slice_do_grow((a), (n));                       \
 }
 
-static inline bool char_slice_grow(char_slice *a, int n) {
-	if (n <= a->cap - a->len) {
-		return true;
-	}
-	return char_slice_do_grow(a, n);
+_fn_init_slice(char)
+
+#define _slice_append(NAME, dst, src, len) do {                              \
+	assert((len) >= 0);                                                      \
+	if ((len) == 0) {                                                        \
+		return true;                                                         \
+	}                                                                        \
+	if (!NAME ## _slice_grow((dst), (len))) {                                \
+		return false;                                                        \
+	}                                                                        \
+	memcpy((dst)->data + (dst)->len, (src), ((len) * sizeof(*(dst)->data))); \
+	(dst)->len += (len);                                                     \
+	return true;                                                             \
+} while(0)
+
+bool char_slice_append(char_slice *dst, const char *src, const int len) {
+	_slice_append(char, dst, src, len);
 }
 
 int char_slice_write_char(char_slice *a, char c) {
@@ -117,11 +149,8 @@ int char_slice_unread_char(char_slice *a) {
 
 int char_slice_write_string(char_slice *a, const char *s) {
 	int n = strlen(s);
-	if (!char_slice_grow(a, n+1)) {
-		return 0;
-	}
-	memcpy(a->data + a->len, s, n+1);
-	a->len += n;
+	char_slice_append(a, s, n + 1);
+	a->len--;
 	return 1;
 }
 
@@ -219,9 +248,9 @@ bufio_error bufio_read_slice(bufio_reader *b, byte_slice *line, const int delim)
 int main() {
 	char_slice a;
 	char_slice_init(&a);
-	char_slice_write_string(&a, "'Hello, World!'\n");
-	char_slice_write_string(&a, "' 1 Hello, World!'\n");
-	char_slice_write_string(&a, "' 2 Hello, World!'\n");
+	assert(char_slice_write_string(&a, "'Hello, World!'\n"));
+	assert(char_slice_write_string(&a, "' 1 Hello, World!'\n"));
+	assert(char_slice_write_string(&a, "' 2 Hello, World!'\n"));
 	printf("Ok: %s\n", a.data);
 	// fwrite(a.data, 1, a.len, stdout);
 	// printf("Hello, World!\n");
