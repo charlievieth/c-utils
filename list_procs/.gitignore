@@ -1,0 +1,4 @@
+list-procs
+*.a
+*.o
+*.s
