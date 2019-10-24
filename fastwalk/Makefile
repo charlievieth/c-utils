@@ -15,20 +15,22 @@ CFLAGS+=-Wstrict-overflow=5 -Wcast-align
 #
 # Race detector:
 #
-CFLAGS+=-fsanitize=thread
+# CFLAGS+=-fsanitize=thread
 #
 # Stack protector flags:
 # CFLAGS+=-fstack-protector-strong -fstack-check -fstack-protector
 #
 OBJ=fastwalk.o
 OUT=fastwalk
-RM=rm -rvf
+RM=rm -rf
 
+.PHONY: all
 all: build
 
-debug: CFLAGS+=-DDEBUG
-debug: run
+debug: CFLAGS+=-DDEBUG -fsanitize=thread
+debug: run clean
 
+.PHONY: run
 run: build
 	./$(OUT)
 
@@ -45,5 +47,4 @@ build: $(OBJ)
 
 .PHONY: clean
 clean:
-	$(RM) *.o $(OUT)
-	$(RM) *.dSYM $(OUT)
+	$(RM) *.o *.dSYM $(OUT)
