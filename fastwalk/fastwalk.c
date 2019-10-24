@@ -38,7 +38,7 @@ typedef struct {
 	queue_node      *head;
 	queue_node      *tail;
 	pthread_cond_t  cond; // TODO: move to top ???
-	int             closed; // TODO: implement this
+	atomic_int      closed; // TODO: implement this
 } queue;
 
 #define __queue_pthread_fatal(_errnum, _op)                             \
@@ -107,6 +107,22 @@ int queue_init(queue *q) {
 	return 0;
 }
 
+int queue_close(queue *q) {
+	int ret = q->closed ? EINVAL : 0;
+	q->closed = 1;
+	pthread_cond_broadcast(&q->cond);
+	return ret;
+}
+
+// static inline int __queue_open(queue *q) { return q->closed == 0; }
+
+// int queue_open(queue *q) {
+// 	queue_lock(q);
+// 	int open = __queue_open(q);
+// 	queue_unlock(q);
+// 	return open;
+// }
+
 size_t queue_len(queue *q) {
 	queue_lock(q);
 	size_t len = q->len;
@@ -141,38 +157,20 @@ void *queue_pop(queue *q) {
 
 void *queue_pop_wait(queue *q) {
 	queue_lock(q);
-again:
 	while (q->head == q->tail && !q->closed) {
 		pthread_cond_wait(&q->cond, &q->lock);
 	}
-	if (q->head == q->tail) {
-		queue_unlock(q);
-		goto again;
+	// WARN: figure out what close should look like
+	void *val = NULL;
+	if (q->head != q->tail) {
+		queue_node *head = q->head;
+		val = head->value;
+		q->head = head->next;
+		q->len--;
+		free(head);
 	}
-	queue_node *head = q->head;
-	void *val = head->value;
-	q->head = head->next;
-	q->len--;
-	free(head);
 	queue_unlock(q);
 	return val;
-}
-
-typedef struct {
-	pthread_cond_t cond;
-	queue *queue;
-} channel;
-
-void channel_push(channel *ch, void *val) {
-	queue_push(ch->queue, val);
-	pthread_cond_signal(&ch->cond);
-}
-
-void *channel_wait(channel *ch) {
-	// queue_push(ch->queue, val);
-	// pthread_cond_signal(&ch->cond);
-	(void)ch;
-	return NULL;
 }
 
 typedef int (walk_func)(const char *path, int typ);
@@ -189,8 +187,8 @@ void *thread_test(void *p) {
 	printf("%d: len (start): %zu\n", a->id, queue_len(a->q));
 	for (int i = 0; i < 100000; i++) {
 		if (i&1) {
-			// queue_pop(a->q);
-			queue_pop_wait(a->q);
+			queue_pop(a->q);
+			// queue_pop_wait(a->q);
 			atomic_fetch_add(a->count, -1);
 		} else {
 			queue_push(a->q, a->val);
@@ -200,6 +198,17 @@ void *thread_test(void *p) {
 	queue_push(a->q, a->val);
 	atomic_fetch_add(a->count, 1);
 	printf("%d: len (end): %zu - %d\n", a->id, queue_len(a->q), atomic_load(a->count));
+	return NULL;
+}
+
+void *drain_queue(void *p) {
+	queue *q = (queue *)p;
+	for (;;) {
+		if (!queue_pop_wait(q) && q->closed) {
+			break;
+		}
+	}
+	printf("### EXIT\n");
 	return NULL;
 }
 
@@ -226,6 +235,9 @@ int main(int argc, char const *argv[]) {
 	};
 	assert(sizeof(thread_args) / sizeof(thread_args[0]) == thread_count);
 
+	pthread_t xthread;
+	pthread_create(&xthread, NULL, drain_queue, q);
+
 	for (int i = 0; i < thread_count; i++) {
 		res = pthread_create(&threads[i], NULL, thread_test, &thread_args[i]);
 		assert(res == 0);
@@ -237,12 +249,17 @@ int main(int argc, char const *argv[]) {
 	}
 	printf("\n");
 
+	printf("killing drain\n");
+	queue_close(q);
+	pthread_join(xthread, NULL);
+
 	queue_node *head = q->head;
 	queue_node *tail = q->tail;
 	printf("count: %d\n", count);
 	printf("head: %p\n", (void *)head);
 	printf("tail: %p\n", (void *)tail);
 	printf("len: %zu\n", queue_len(q));
+	printf("closed: %d\n", q->closed);
 
 	int n = 0;
 	while (queue_len(q) > 0) {
