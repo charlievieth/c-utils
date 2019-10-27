@@ -1,7 +1,7 @@
 CC=clang
 # Debug (-g creates the *.dSYM directory)
 #
-CFLAGS=-O1 -std=c11 -g
+CFLAGS=-O3 -std=c11 -g -flto
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 #

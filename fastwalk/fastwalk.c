@@ -6,6 +6,8 @@
 #include <assert.h>
 #include <pthread.h>
 
+#include <ftw.h>
+
 #include <stdatomic.h>
 
 //  TODO: Check GCC or Clang
@@ -38,7 +40,7 @@ typedef struct {
 	queue_node      *head;
 	queue_node      *tail;
 	pthread_cond_t  cond; // TODO: move to top ???
-	atomic_int      closed; // TODO: implement this
+	int             closed; // TODO: implement this
 } queue;
 
 #define __queue_pthread_fatal(_errnum, _op)                             \
@@ -107,10 +109,21 @@ int queue_init(queue *q) {
 	return 0;
 }
 
+bool queue_is_closed(queue *q) {
+	queue_lock(q);
+	bool closed = q->closed != 0;
+	queue_unlock(q);
+	return closed;
+}
+
 int queue_close(queue *q) {
+	queue_lock(q);
 	int ret = q->closed ? EINVAL : 0;
-	q->closed = 1;
-	pthread_cond_broadcast(&q->cond);
+	q->closed++;
+	queue_unlock(q);
+	if (ret == 0) {
+		pthread_cond_broadcast(&q->cond);
+	}
 	return ret;
 }
 
@@ -173,7 +186,13 @@ void *queue_pop_wait(queue *q) {
 	return val;
 }
 
-typedef int (walk_func)(const char *path, int typ);
+typedef int (*walk_func)(const char *path, int typ);
+
+typedef struct {
+	walk_func fn;
+	queue     *workc;
+	queue     *enqueuec;
+} walker;
 
 typedef struct {
 	int id;
@@ -204,7 +223,7 @@ void *thread_test(void *p) {
 void *drain_queue(void *p) {
 	queue *q = (queue *)p;
 	for (;;) {
-		if (!queue_pop_wait(q) && q->closed) {
+		if (queue_pop_wait(q) == NULL && queue_is_closed(q)) {
 			break;
 		}
 	}
@@ -212,7 +231,90 @@ void *drain_queue(void *p) {
 	return NULL;
 }
 
+queue *global_queue = NULL;
+atomic_size_t global_count = 0;
+
+int count_lines(const unsigned char *s, int size) {
+	int n = 0;
+	for (int i = 0; i < size; i++) {
+		if (s[i] == '\n') {
+			n++;
+		}
+	}
+	return n;
+}
+
+void *ftw_worker(void *p) {
+	(void)p;
+	const int size = 1024 * 1024;
+	unsigned char *buffer = malloc(size);
+	for (;;) {
+		char *path = (char *)queue_pop(global_queue);
+		if (!path) {
+			if (queue_is_closed(global_queue)) {
+				break;
+			}
+			continue;
+		}
+		FILE *fp = fopen(path, "r");
+		if (!fp) {
+			continue;
+		}
+		int n;
+		int count = 0;
+		while ((n = fread(buffer, 1, size, fp)) == size) {
+			count += count_lines(buffer, n);
+		}
+		if (n > 0) {
+			// TODO: check error
+			count += count_lines(buffer, n);
+		}
+		fclose(fp);
+		free(path);
+		global_count += count;
+	}
+	return NULL;
+}
+
+// int (*fn)(const char *, const struct stat *ptr, int flag)
+int walk_ftw(const char *name, const struct stat *ptr, int flag) {
+	(void)ptr;
+	(void)flag;
+	if (flag == FTW_F) {
+		queue_push(global_queue, strdup(name));
+	}
+	return 0;
+}
+
 int main(int argc, char const *argv[]) {
+	(void)argc;
+	(void)argv;
+
+	global_queue = malloc(sizeof(queue));
+	assert(queue_init(global_queue) == 0);
+
+	const int thread_count = 4;
+	pthread_t threads[thread_count];
+
+	for (int i = 0; i < thread_count; i++) {
+		int res = pthread_create(&threads[i], NULL, ftw_worker, global_queue);
+		assert(res == 0);
+	}
+	int ret = ftw("/Users/cvieth/Projects/C", walk_ftw, 10000);
+	printf("RET: %d\n", ret);
+	queue_close(global_queue);
+
+	for (int i = 0; i < thread_count; i++) {
+		assert(pthread_join(threads[i], NULL) == 0);
+	}
+	printf("LINES: %zu\n", global_count);
+	printf("DONE\n");
+
+	return 0;
+}
+
+/*
+int xmain(int argc, char const *argv[]) {
 	(void)argc;
 	(void)argv;
 
@@ -250,8 +352,10 @@ int main(int argc, char const *argv[]) {
 	printf("\n");
 
 	printf("killing drain\n");
-	queue_close(q);
+	printf("queue_close: %d\n", queue_close(q));
+	// queue_close(q);
 	pthread_join(xthread, NULL);
+	printf("kill complete\n");
 
 	queue_node *head = q->head;
 	queue_node *tail = q->tail;
@@ -295,3 +399,4 @@ int main(int argc, char const *argv[]) {
 
 	return 0;
 }
+*/
