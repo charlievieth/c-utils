@@ -2,7 +2,7 @@
 #
 # Debug (-g creates the *.dSYM directory)
 #
-CFLAGS=-std=c11 -g -O2
+CFLAGS=-std=c11 -O3
 # CFLAGS=-O2 -std=gnu11 -march=native
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html

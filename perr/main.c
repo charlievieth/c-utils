@@ -1,9 +1,9 @@
 #include <stdio.h>
 
-static const int size = 4096;
-static unsigned char buf[4096];
-
 int main() {
+	static unsigned char buf[32 * 1024];
+	static const int size = sizeof(buf);
+
 	size_t n;
 	while ((n = fread(buf, 1, size, stdin)) == size) {
 		if ((fwrite(buf, 1, size, stderr)) != size) {
