@@ -2,9 +2,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <dirent.h>
 #include <errno.h>
 #include <assert.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include <ftw.h>
 
@@ -186,13 +188,176 @@ void *queue_pop_wait(queue *q) {
 	return val;
 }
 
+enum walker_status {
+	W_SKIP_DIR      = -1,
+	W_SKIP_FILES    = -2,
+	W_TRAVERSE_LINK = -3,
+};
+
 typedef int (*walk_func)(const char *path, int typ);
 
 typedef struct {
 	walk_func fn;
 	queue     *workc;
 	queue     *enqueuec;
+	atomic_bool done;
 } walker;
+
+typedef struct {
+	walker *w;
+	const char *dir;
+} walk_context;
+
+typedef struct {
+	const char *dir;
+} walk_item;
+
+static void walker_enqueue(walker *w, char *dir) {
+	if (!w->done) {
+		queue_push(w->enqueuec, dir);
+	}
+}
+
+static char *walker_join_paths(const char *dir, size_t dlen, struct dirent *dp) {
+	size_t nlen = dp->d_namlen; // TODO: support systems without d_namlen
+	char *joined = malloc(dlen + strlen("/") + nlen + 1);
+	if (unlikely(!joined)) {
+		fprintf(stderr, "walker_join_paths: OOM\n");
+		assert(joined);
+		exit(1);
+	}
+	memcpy(joined, dir, dlen);
+	memcpy(&joined[dlen], "/", 1);
+	memcpy(&joined[dlen + 1], dp->d_name, nlen + 1);
+	return joined;
+}
+
+int walker_on_dirent(walker *w, const char *dir, size_t dlen, struct dirent *dp) {
+	char *joined = walker_join_paths(dir, dlen, dp);
+	if (dp->d_type == DT_DIR) {
+		walker_enqueue(w, joined);
+		return 0;
+	}
+	// TODO: support W_TRAVERSE_LINK
+	return w->fn(joined, dp->d_type);
+}
+
+int walker_do_walk(walker *w, const char *dirname) {
+	DIR *dir = opendir(dirname);
+	if (!dir) {
+		perror(dirname);
+		return 0; // TODO: check different error types
+	}
+
+	int ret = 0;
+	struct dirent *dp;
+	const size_t dirlen = strlen(dirname);
+	bool skip_files = false;
+
+	while ((dp = readdir(dir))) {
+		if (dp->d_type == DT_UNKNOWN) {
+			continue;
+		}
+		if (skip_files && dp->d_type == DT_REG) {
+			continue;
+		}
+		if (strcmp(dp->d_name, ".") == 0 || strcmp(dp->d_name, "..") == 0) {
+			continue;
+		}
+		ret = walker_on_dirent(w, dirname, dirlen, dp);
+		if (ret != 0) {
+			if (ret == W_SKIP_FILES) {
+				skip_files = true;
+				ret = 0;
+				continue;
+			}
+			break;
+		}
+	}
+
+	closedir(dir);
+	return ret;
+}
+
+void *walker_do_work(void *data) {
+	assert(data);
+	walker *w = (walker *)data;
+	while (!w->done) {
+		char *dir = (char *)queue_pop_wait(w->workc);
+		if (!dir || w->done) {
+			break;
+		}
+		int ret = walker_do_walk(w, dir);
+		(void)ret; // WARN: handle this
+
+		// WARN WARN
+		// use a union or something for the return value
+		// WARN WARN
+
+		if (dir) {
+			free(dir);
+		}
+	};
+	return NULL;
+}
+
+int walker_walk(const char *root) {
+	const int nprocs = 12; // TODO: don't hard code this
+	(void)root;   // WARN
+	(void)nprocs; // WARN
+
+	walker *w = malloc(sizeof(walker));
+	if (!w) {
+		fprintf(stderr, "error: OOM\n");
+		assert(0);
+		return 1;
+	}
+	w->workc = malloc(sizeof(queue));
+	w->enqueuec = malloc(sizeof(queue));
+	if (!w->workc || !w->enqueuec) {
+		fprintf(stderr, "error: OOM\n");
+		assert(0);
+		return 1;
+	}
+
+	int ret;
+	if ((ret = queue_init(w->workc)) != 0) {
+		fprintf(stderr, "error: failed to initialize: workc: %d\n", ret);
+		assert(0);
+		return ret;
+	}
+	if ((ret = queue_init(w->enqueuec)) != 0) {
+		fprintf(stderr, "error: failed to initialize: enqueuec: %d\n", ret);
+		assert(0);
+		return ret;
+	}
+
+	pthread_t *threads = calloc(nprocs, sizeof(pthread_t));
+
+	for (int i = 0; i < nprocs; i++) {
+		if ((ret = pthread_create(&threads[i], NULL, walker_do_work, w)) != 0) {
+			assert(ret == 0);
+			goto err_cleanup;
+		}
+	}
+
+err_cleanup:
+	queue_close(w->workc);
+	queue_close(w->enqueuec);
+
+	for (int i = 0; i < nprocs; i++) {
+		if (!threads[i]) {
+			continue;
+		}
+		pthread_cancel(threads[i]);
+	}
+	free(threads);
+	free(w->workc);
+	free(w->enqueuec);
+	free(w);
+
+	return 1;
+}
 
 typedef struct {
 	int id;
@@ -286,9 +451,32 @@ int walk_ftw(const char *name, const struct stat *ptr, int flag) {
 	return 0;
 }
 
+int test_dirent() {
+	const char *dirname = "/Users/cvieth/Projects/C/utils/fastwalk";
+	DIR *dir = opendir(dirname);
+	if (!dir) {
+		perror(dirname);
+		return 1; // TODO: check different error types
+	}
+
+	struct dirent *dp;
+	while ((dp = readdir(dir))) {
+		// TODO: support "skip files"
+		printf("%s (%d): %i %zu\n", dp->d_name, dp->d_type, dp->d_namlen, strlen(dp->d_name));
+		char *s = walker_join_paths(dirname, strlen(dirname), dp);
+		printf("\t'%s'\n", s);
+		free(s);
+	}
+
+	closedir(dir);
+	return 0;
+}
+
 int main(int argc, char const *argv[]) {
 	(void)argc;
 	(void)argv;
+	assert(test_dirent() == 0);
+	return 0;
 
 	global_queue = malloc(sizeof(queue));
 	assert(queue_init(global_queue) == 0);
