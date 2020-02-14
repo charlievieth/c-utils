@@ -13,6 +13,22 @@
 
 // static const int NC_ALIGNMENT = 4096;
 
+/*
+typedef struct {
+	int start;
+	int end;
+} match;
+
+match find_index(const char *b, int len) {
+	// Pattern: \x1b\[[0-?]*[ -/]*[@-~]
+	static const int min_len = 2; // "\\[[@-~]"
+
+	match m = { .start = -1, .end = -1 };
+
+	return m;
+}
+*/
+
 int main() {
 	return 0;
 }
