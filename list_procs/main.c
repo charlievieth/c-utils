@@ -244,6 +244,19 @@ err_cleanup:
 	return 1;
 }
 
+int has_suffix(const char *s, const char *suffix) {
+	size_t s_len = strlen(s);
+	size_t sfx_len = strlen(suffix);
+	if (s_len < sfx_len) {
+		return 0;
+	}
+	if (s_len == sfx_len) {
+		return memcmp(s, suffix, sfx_len) == 0;
+	}
+	const char *p = s + (s_len - sfx_len);
+	return memcmp(p, suffix, sfx_len) == 0;
+}
+
 int main() {
 	process_list_t list;
 	if (get_process_list(&list) != 0) {
@@ -255,6 +268,13 @@ int main() {
 			list.procs[i].ppid, list.procs[i].basename_offset, list.procs[i].args);
 	}
 	printf("count: %zu\n", list.count);
+
+	// WARN: testing only (prints cmd line then just args)
+	// NOTE: basename_offset is just the start of args
+	for (size_t i = 0; i < list.count; i++) {
+		printf("%d: %s\n\t%s\n", list.procs[i].basename_offset, list.procs[i].args,
+				list.procs[i].args + list.procs[i].basename_offset);
+	}
 
 	return 0;
 }
