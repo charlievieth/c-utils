@@ -1,4 +1,4 @@
-CC=clang
+CC=gcc
 # Debug (-g creates the *.dSYM directory)
 #
 CFLAGS=-O3 -std=c11 -g -flto
@@ -20,30 +20,35 @@ CFLAGS+=-Wstrict-overflow=5 -Wcast-align
 # Stack protector flags:
 # CFLAGS+=-fstack-protector-strong -fstack-check -fstack-protector
 #
-OBJ=fastwalk.o
 OUT=fastwalk
-RM=rm -rf
+RM=rm -rfv
 
 .PHONY: all
 all: build
 
-debug: CFLAGS+=-DDEBUG -fsanitize=thread
-debug: run clean
+.PHONY: race
+race: CFLAGS+=-fsanitize=thread
+race: run
 
-.PHONY: run
-run: build
-	./$(OUT)
-
-%.o: %.c
-	@$(CC) -c -o $@ $< $(CFLAGS)
+# build the binary (we do this so that we generate debug symbols)
+fastwalk:
+	@$(CC) $(CFLAGS) -o $(OUT) fastwalk.c
 
 # Note:
 #   $(RM) *.o forces rebuild
 #   $(RM) $(OUT).o forces rebuild of target
 #
 # @$(RM) $(OUT).o
-build: $(OBJ)
-	@$(CC) -o $(OUT) $^ $(CFLAGS)
+.PHONY: build
+build: fastwalk
+
+.PHONY: debug
+debug: CFLAGS+=-DDEBUG -fsanitize=thread
+debug: run clean
+
+.PHONY: run
+run: build
+	./$(OUT)
 
 .PHONY: clean
 clean:
