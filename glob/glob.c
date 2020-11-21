@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <glob.h>
 
+// TODO: consider using ftw.h and fnmatch.h
 
 int main(int argc, char const *argv[]) {
 	if (argc <= 1) {

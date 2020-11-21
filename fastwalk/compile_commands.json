@@ -1,0 +1,27 @@
+[
+    {
+        "arguments": [
+            "gcc",
+            "-c",
+            "-O3",
+            "-std=c11",
+            "-g",
+            "-flto",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic",
+            "-pedantic-errors",
+            "-Wshadow",
+            "-Wswitch-enum",
+            "-Wcast-qual",
+            "-Wpointer-arith",
+            "-Wstrict-overflow=5",
+            "-Wcast-align",
+            "-o",
+            "fastwalk",
+            "fastwalk.c"
+        ],
+        "directory": "/Users/cvieth/Projects/C/utils/fastwalk",
+        "file": "fastwalk.c"
+    }
+]

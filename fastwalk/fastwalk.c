@@ -167,6 +167,7 @@ void *queue_pop(queue *q) {
 		free(head);
 	}
 	queue_unlock(q);
+	// TODO: signal waiters
 	return val;
 }
 
@@ -414,7 +415,7 @@ void *ftw_worker(void *p) {
 	const int size = 1024 * 1024;
 	unsigned char *buffer = malloc(size);
 	for (;;) {
-		char *path = (char *)queue_pop(global_queue);
+		char *path = (char *)queue_pop_wait(global_queue);
 		if (!path) {
 			if (queue_is_closed(global_queue)) {
 				break;
@@ -475,8 +476,8 @@ int test_dirent() {
 int main(int argc, char const *argv[]) {
 	(void)argc;
 	(void)argv;
-	assert(test_dirent() == 0);
-	return 0;
+	// assert(test_dirent() == 0);
+	// return 0;
 
 	global_queue = malloc(sizeof(queue));
 	assert(queue_init(global_queue) == 0);
