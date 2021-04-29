@@ -16,11 +16,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define sansi_oom()                   \
-	do {                              \
-		fprintf("oom: %i", __LINE__); \
-		exit(2);                      \
-	} while (0)
+#include "hedley.h"
 
 // Simple buffer implementation
 
@@ -30,18 +26,20 @@ struct buffer {
 	size_t len;
 };
 
+HEDLEY_NON_NULL(1)
 static void buffer_reset(struct buffer *b) {
 	b->cap = 0;
 	b->len = 0;
 }
 
+HEDLEY_NON_NULL(1)
 static void buffer_free(struct buffer *b) {
-	assert(b);
 	free(b->buf);
 	b->buf = NULL;
 	buffer_reset(b);
 }
 
+HEDLEY_NON_NULL(1)
 static int buffer_grow(struct buffer *b, size_t len) {
 	if (len > b->cap-b->len) {
 		size_t cap = (b->cap*2) + len;
@@ -57,6 +55,7 @@ static int buffer_grow(struct buffer *b, size_t len) {
 	return 0;
 }
 
+HEDLEY_NON_NULL(1, 2)
 static int buffer_write(struct buffer *b, const void *buf, size_t len) {
 	if (buffer_grow(b, len) == -1) {
 		return -1;
@@ -100,6 +99,11 @@ static inline bool is_print(unsigned char c) {
 	return '\x20' <= c && c <= '\x7e';
 }
 
+static inline bool is_crtl_seq_start(unsigned char c) {
+	return c == '\\' || c == '[' || c == '(' || c == ')';
+}
+
+HEDLEY_NON_NULL(1)
 static inline int match_operating_system_command(const unsigned char *p, int64_t length) {
 	int64_t i = 5;
 	for ( ; i < length && is_print(p[i]); i++) {
@@ -115,6 +119,7 @@ static inline int match_operating_system_command(const unsigned char *p, int64_t
 	return -1;
 }
 
+HEDLEY_NON_NULL(1)
 static inline int match_control_sequence(const unsigned char *p, int64_t length) {
 	int64_t i = 2;
 	for ( ; i < length; i++) {
@@ -131,10 +136,7 @@ static inline int match_control_sequence(const unsigned char *p, int64_t length)
 	return -1;
 }
 
-static inline bool is_crtl_seq_start(unsigned char c) {
-	return c == '\\' || c == '[' || c == '(' || c == ')';
-}
-
+HEDLEY_NON_NULL(1)
 static inline int64_t has_ansi(const unsigned char *s) {
 	const unsigned char *p = s;
 	unsigned char c;
@@ -156,6 +158,7 @@ static inline bool rune_start(unsigned char c) {
 	return (c&0xC0) != 0x80;
 }
 
+HEDLEY_NON_NULL(1)
 static int64_t decode_rune_in_string(const unsigned char *p, int64_t length) {
 	if (length < 1) {
 		return 0;
@@ -165,6 +168,7 @@ static int64_t decode_rune_in_string(const unsigned char *p, int64_t length) {
 	return size > 0 ? size : 1;
 }
 
+HEDLEY_NON_NULL(1)
 static int64_t decode_last_rune_in_string(const unsigned char *p, int64_t length) {
 	const int utf_max = 4;
 
@@ -195,6 +199,7 @@ static int64_t decode_last_rune_in_string(const unsigned char *p, int64_t length
 	return size;
 }
 
+HEDLEY_NON_NULL(1,3,4)
 static int next_ansi_escape_sequence(const char *s, int64_t length, int64_t *start, int64_t *end) {
 	const unsigned char *p = (const unsigned char *)s;
 	assert(start);
@@ -275,6 +280,7 @@ static int next_ansi_escape_sequence(const char *s, int64_t length, int64_t *sta
 	return -1;
 }
 
+HEDLEY_NON_NULL(1,3)
 static int strip_ansi(const char *s, int64_t length, struct buffer *b) {
 	int64_t start, end;
 	int64_t prev = 0;
@@ -304,6 +310,7 @@ static int strip_ansi(const char *s, int64_t length, struct buffer *b) {
 	return 0;
 }
 
+HEDLEY_NON_NULL(2)
 static int read_ignoring_eintrio(int fd, void *buf, size_t size) {
 	int n;
 	do {
@@ -312,6 +319,7 @@ static int read_ignoring_eintrio(int fd, void *buf, size_t size) {
 	return n;
 }
 
+HEDLEY_NON_NULL(2)
 static int write_ignoring_eintrio(int fd, void *buf, size_t size) {
 	int n;
 	do {
