@@ -1,13 +1,7 @@
 # CC=fake-gcc
 # Debug (-g creates the *.dSYM directory)
 #
-# CFLAGS=-O2 -std=c11 -g -flto
-CFLAGS=-O2 -std=c11 -DPCRE2_CODE_UNIT_WIDTH=8
-LDFLAGS=-L/usr/local/Cellar/pcre2/10.36/lib -lpcre2-8
-CFLAGS+=-I/usr/local/Cellar/pcre2/10.36/include
-
-# CFLAGS += $(shell pkg-config --cflags json-c)
-# LDFLAGS += $(shell pkg-config --libs json-c)
+CFLAGS=-O3 -march=native -mtune=native -flto -std=c11 -g
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 #

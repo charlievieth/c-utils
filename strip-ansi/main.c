@@ -16,265 +16,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#include <pcre2.h>
-
-static const char *const strip_pattern = "(?:\x1b[\\[()][0-9;]*[a-zA-Z@]|\x1b][0-9];[[:print:]]+(?:\x1b\\\\|\x07)|\x1b.|[\x0e\x0f]|.\x08)";
-static const size_t strip_pattern_size = strlen(strip_pattern);
-
-char *escape_string(const char *s) {
-	const unsigned char *p = (const unsigned char *)s;
-	int n = strlen(s);
-	int bufsize = n * 2;
-	char *buf = malloc(bufsize);
-	char *b = buf;
-
-	#define grow(m)                                  \
-		do {                                         \
-			ptrdiff_t sz = b - buf;                  \
-			if (sz <= (ptrdiff_t)m) {                \
-				size_t new_size = (bufsize + m) * 2; \
-				buf = realloc(buf, new_size);        \
-				assert(buf);                         \
-				bufsize = new_size;                  \
-				b = &buf[sz];                        \
-			}                                        \
-		} while(0)
-
-	#define append(s)             \
-		do {                      \
-			size_t m = strlen(s); \
-			grow(m);              \
-			strcpy(b, s);         \
-			b += m;               \
-		} while(0)
-
-	#define append_char(c) \
-		do {               \
-			grow(1);       \
-			*b++ = c;      \
-		} while(0);
-
-	for (int i = 0; i < n; i++) {
-		unsigned char c = p[i];
-		switch (c) {
-		case '\\':
-			append("\\\\");
-			break;
-		case '\t':
-			append("\\t");
-			break;
-		case '\v':
-			append("\\v");
-			break;
-		case '\r':
-			append("\\r");
-			break;
-		case '\n':
-			append("\\n");
-			break;
-		default:
-			if (iscntrl(c)) {
-				grow(5);
-				int m = sprintf(b, "\\x%.2x", c);
-				assert(m >= 0);
-				b += m;
-			} else {
-				append_char(c);
-			}
-		}
-	}
-	append_char('\0');
-
-	#undef append_char
-	#undef append
-	#undef grow
-
-	return buf;
-}
-
-int print_pcre2_error(int errcode, const char *format, ...) {
-	int return_code = 0;
-	char *errbuf = NULL;
-	char *bufp = NULL;
-
-	errbuf = calloc(256, 1);
-	assert(errbuf);
-	if (!errbuf) {
-		goto error;
-	}
-	int n = pcre2_get_error_message(errcode, (unsigned char *)errbuf, 256);
-	switch (n) {
-	case PCRE2_ERROR_NOMEMORY:
-		strcpy(errbuf, "PCRE2_ERROR_NOMEMORY");
-		// n = strlen("PCRE2_ERROR_NOMEMORY");
-		break;
-	case PCRE2_ERROR_BADDATA:
-		strcpy(errbuf, "PCRE2_ERROR_BADDATA");
-		// n = strlen("PCRE2_ERROR_BADDATA");
-		break;
-	case 1:
-		strcpy(errbuf, "INVALID ERROR CODE");
-		// n = strlen("INVALID ERROR CODE");
-		break;
-	}
-
-	bufp = NULL;
-	size_t sizep;
-	FILE *mstream = open_memstream(&bufp, &sizep);
-	assert(mstream);
-	if (!mstream) {
-		goto error;
-	}
-
-	fprintf(mstream, "Error (%d): %s: ", errcode, errbuf);
-
-	va_list args;
-	va_start(args, format);
-	assert(vfprintf(mstream, format, args) >= 0);
-	va_end(args);
-
-	assert(fflush(mstream) == 0);
-	if (sizep > 0 && bufp[sizep - 1] != '\n') {
-		fputc('\n', mstream);
-	}
-	assert(fclose(mstream) == 0);
-
-	fwrite(bufp, 1, sizep, stderr);
-
-exit:
-	if (errbuf) {
-		free(errbuf);
-	}
-	if (bufp) {
-		free(bufp);
-	}
-
-	return return_code;
-
-error:
-	return_code = 1;
-	goto exit;
-}
-
-static pcre2_code *re;
-static pcre2_match_data *match_data;
-static pcre2_match_context *mcontext;
-static pcre2_jit_stack *jit_stack;
-
-int compile_pattern() {
-	int errcode;
-	PCRE2_SIZE erroffset;
-	uint32_t options = PCRE2_MULTILINE | PCRE2_JIT_COMPLETE;
-	re = pcre2_compile((const unsigned char*)strip_pattern, options,
-		strip_pattern_size, &errcode, &erroffset, NULL);
-	if (!re) {
-		print_pcre2_error(errcode, "invalid pattern at index %zu: `%s`",
-			erroffset, strip_pattern);
-		assert(re);
-		return 1;
-	}
-
-	int rc = pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
-	assert(rc == 0);
-
-	mcontext = pcre2_match_context_create(NULL);
-	assert(mcontext);
-
-	jit_stack = pcre2_jit_stack_create(32*1024, 1024*1024, NULL);
-	assert(jit_stack);
-
-	match_data = pcre2_match_data_create_from_pattern(re, NULL);
-	assert(match_data);
-
-	return 0;
-}
-
-/*
-int main(void) {
-	const int SIZE = 4096;
-	char buf[SIZE];
-	int n = 0;
-	while ((n = fread(buf, sizeof(*buf), SIZE, stdin)) == SIZE) {
-		for (int i = 0; i < SIZE; ++i) {
-			int c = buf[i];
-			if (c != '\n') {
-				fputc(c, stdout);
-			}
-		}
-	}
-	if (feof(stdin)) {
-		for (int i = 0; i < n; ++i) {
-			int c = buf[i];
-			if (c != '\n') {
-				fputc(c, stdout);
-			}
-		}
-	} else if (ferror(stdin)) {
-		perror("Error: reading stdin");
-	}
-	return 0;
-}
-*/
-
-int replace_all(const char *subject, size_t length) {
-	size_t bufsize = length + 512;
-	char *buf = malloc(bufsize);
-	assert(buf);
-	if (!buf) {
-		goto error;
-	}
-
-	/*
-	int pcre2_substitute(
-		const pcre2_code *code,
-		PCRE2_SPTR subject,
-		PCRE2_SIZE length,
-		PCRE2_SIZE startoffset,
-		uint32_t options,
-		pcre2_match_data *match_data,
-		pcre2_match_context *mcontext,
-		PCRE2_SPTR replacement,
-		PCRE2_SIZE rlength,
-		PCRE2_UCHAR *outputbuffer,
-		PCRE2_SIZE *outlengthptr,
-	);
-	*/
-
-	uint32_t options = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_LITERAL;
-	int rc = pcre2_substitute(
-		re,                             // pcre2_code *code
-		(const unsigned char *)subject, // subject
-		length,                         // length
-		0,                              // startoffset
-		options,                        // options
-		// TODO: not needed
-		// match_data,                     // *match_data
-		NULL,                     // *match_data
-		// TODO: not needed
-		// mcontext,                       // *mcontext
-		NULL,                       // *mcontext
-		(const unsigned char *)"",      // replacement
-		0,                              // rlength
-		(unsigned char *)buf,           // *outputbuffer
-		&bufsize                        // *outlengthptr
-	);
-	if (rc < 0) {
-		print_pcre2_error(rc, "pcre2_substitute failed");
-		goto error;
-	}
-
-	printf("rc: %d\n", rc);
-	printf("length: %zu\n", length);
-	printf("bufsize: %zu\n", bufsize);
-
-	// fwrite(buf, 1, bufsize, stdout);
-
-	return 0;
-
-error:
-	free(buf);
-	return 1;
-}
+#define sansi_oom()                   \
+	do {                              \
+		fprintf("oom: %i", __LINE__); \
+		exit(2);                      \
+	} while (0)
 
 // Simple buffer implementation
 
@@ -320,6 +66,7 @@ static int buffer_write(struct buffer *b, const void *buf, size_t len) {
 	return 0;
 }
 
+/*
 static int buffer_append_char(struct buffer *b, unsigned char c) {
 	if (buffer_grow(b, 1) == -1) {
 		return -1;
@@ -339,6 +86,7 @@ static const char *buffer_str(struct buffer *b) {
 	}
 	return b->buf;
 }
+*/
 
 // ANSI Parsing
 
@@ -447,7 +195,7 @@ static int64_t decode_last_rune_in_string(const unsigned char *p, int64_t length
 	return size;
 }
 
-int next_ansi_escape_sequence(const char *s, int64_t length, int64_t *start, int64_t *end) {
+static int next_ansi_escape_sequence(const char *s, int64_t length, int64_t *start, int64_t *end) {
 	const unsigned char *p = (const unsigned char *)s;
 	assert(start);
 	assert(end);
@@ -527,7 +275,7 @@ int next_ansi_escape_sequence(const char *s, int64_t length, int64_t *start, int
 	return -1;
 }
 
-int strip_ansi(const char *s, int64_t length, struct buffer *b) {
+static int strip_ansi(const char *s, int64_t length, struct buffer *b) {
 	int64_t start, end;
 	int64_t prev = 0;
 	int i = 0;
@@ -572,81 +320,7 @@ static int write_ignoring_eintrio(int fd, void *buf, size_t size) {
 	return n;
 }
 
-int process_stdin() {
-	const int64_t min_read = 512;
-	int64_t cap = 32 * 1024;
-	assert(cap > min_read); // sanity check
-
-	char *buf = malloc(cap);
-	assert(buf);
-	char *p = buf;
-
-	int n;
-	while (1) {
-		int64_t len = p - buf;
-		if ((cap - len) < min_read) {
-			char *new_buf = realloc(buf, cap * 2);
-			assert(new_buf);
-			if (!new_buf) {
-				goto error;
-			}
-			cap *= 2;
-			buf = new_buf;
-			p = &buf[len];
-		}
-		if ((n = read_ignoring_eintrio(STDIN_FILENO, p, cap-len)) <= 0) {
-			break;
-		}
-		p += n;
-	};
-	if (n < 0) {
-		perror("read");
-		goto error;
-	}
-	p[0] = '\0';
-
-	// printf("##########\n");
-	// fwrite(buf, 1, p-buf, stdout);
-	// // printf("%s", buf);
-	// printf("##########\n");
-
-	// replace_all(buf, p-buf);
-
-	// fprintf(stderr, "process_stdin: done\n"); // WARN
-	struct buffer b = { 0 };
-	buffer_grow(&b, p-buf);
-
-	// WARN WARN WARN
-	for (int i = 0; i < 100; i++) {
-		buffer_reset(&b);
-		if (strip_ansi(buf, p-buf, &b) == -1) {
-			buffer_free(&b);
-			return -1;
-		}
-		write_ignoring_eintrio(STDOUT_FILENO, b.buf, b.len);
-	}
-	free(buf);
-	buffer_free(&b);
-
-	// if (strip_ansi(buf, p-buf, &b) == -1) {
-	// 	buffer_free(&b);
-	// 	return -1;
-	// }
-	// free(buf);
-
-	// fwrite(b.buf, 1, b.len, stdout);
-	// buffer_free(&b);
-
-	return 0;
-
-error:
-	free(buf);
-
-	// buffer_free(b);
-	return 1;
-}
-
-int process_fildes(int fd_in, int fd_out, int benchmark) {
+static int process_fildes(int fd_in, int fd_out, int benchmark) {
 	struct buffer b = { 0 };
 
 	const int64_t min_read = 512;
@@ -747,120 +421,4 @@ int main(int argc, char const *argv[]) {
 		 }
 	}
 	return 0;
-
-	// return process_stdin();
-
-	// // const char *test = "\x1b[1mhello \x1b[mw\x1b.7o\x1b.8r\x1b(Bl\x1b[2@d";
-	// const char *test = "\x1b[1mhello \x1b[Kworld";
-	// const int test_len = strlen(test);
-	// // char_range range = { 0 };
-	// {
-	// 	struct buffer buf = { 0 };
-	// 	int rc = strip_ansi(test, test_len, &buf);
-	// 	printf("rc: %i outsize: %zu\n", rc, buf.len);
-	// 	printf("escaped: '%s'\n", buffer_str(&buf));
-	// 	return 0;
-	// }
-
-	// int i = 0;
-	// int64_t prev = 0;
-	// int64_t start, end;
-	// while (i < test_len) {
-	// 	int rc = next_ansi_escape_sequence(&test[i], test_len-i, &start, &end);
-	// 	if (rc == -1 || start == -1) {
-	// 		break;
-	// 	}
-	// 	start += i;
-	// 	i += end;
-	// 	printf("i: %d start: %d end: %d\n", i, start, end);
-	// 	printf("'%.*s'\n", start, &test[prev]);
-
-	// 	prev = i;
-	// }
-	// if (prev > 0) {
-	// 	printf("'%.*s'\n", test_len, &test[prev]);
-	// }
-	// return 0;
-
-
-	// const char *test = "日a本b語ç日ð本Ê語þ日¥本¼語i日";
-	// const size_t test_len = strlen(test);
-	// int n = decode_last_rune_in_string((const unsigned char *)test, test_len);
-	// printf("%d: %s\n", n, &test[test_len - n]);
-	// return 0;
-
-	// char *s = escape_string(strip_pattern);
-	// printf("pattern: `%s`\n", s);
-	// free(s);
-	// return 0;
-
-	// int ret = compile_pattern();
-	// printf("ret: %d\n", ret);
-
 }
-
-/*
-int process_stdin() {
-	const int SIZE = 8192;
-	char *buf = malloc(SIZE);
-	assert(buf);
-
-	int64_t cap = 32 * 1024;
-	int64_t len = 0;
-	char *data = malloc(cap);
-	assert(data);
-
-	int n;
-	while ((n = fread(buf, sizeof(*buf), SIZE, stdin)) > 0) {
-		if (SIZE > cap-len) {
-			int64_t new_cap = (2 * cap) + SIZE;
-			char *new_data = realloc(data, new_cap);
-			assert(new_data);
-			if (!new_data) {
-				free(data);
-				return 1;
-			}
-			data = new_data;
-			cap = new_cap;
-		}
-		memcpy(&data[len], buf, n);
-		if (n != SIZE) {
-			break;
-		}
-	}
-	if (feof(stdin)) {
-		for (int i = 0; i < n; ++i) {
-			int c = buf[i];
-			if (c != '\n') {
-				fputc(c, stdout);
-			}
-		}
-	} else if (ferror(stdin)) {
-		perror("Error: reading stdin");
-	}
-	free(buf);
-	return 0;
-}
-*/
-
-// void example() {
-// 	int rc;
-// 	pcre2_code *re;
-// 	pcre2_match_data *match_data;
-// 	pcre2_match_context *mcontext;
-// 	pcre2_jit_stack *jit_stack;
-
-// 	re = pcre2_compile("pattern", PCRE2_ZERO_TERMINATED, 0, &errornumber, &erroffset, NULL);
-// 	rc = pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
-// 	mcontext = pcre2_match_context_create(NULL);
-// 	jit_stack = pcre2_jit_stack_create(32*1024, 512*1024, NULL);
-// 	pcre2_jit_stack_assign(mcontext, NULL, jit_stack);
-// 	match_data = pcre2_match_data_create(re, 10);
-// 	rc = pcre2_match(re, subject, length, 0, 0, match_data, mcontext);
-// 	/* Process result */
-
-// 	pcre2_code_free(re);
-// 	pcre2_match_data_free(match_data);
-// 	pcre2_match_context_free(mcontext);
-// 	pcre2_jit_stack_free(jit_stack);
-// }
