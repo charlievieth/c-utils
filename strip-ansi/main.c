@@ -284,6 +284,68 @@ error:
 	return 1;
 }
 
+// Simple buffer implementation
+
+struct buffer {
+	char   *buf;
+	size_t cap;
+	size_t len;
+};
+
+static void buffer_free(struct buffer *b) {
+	assert(b);
+	free(b->buf);
+	b->buf = NULL;
+	b->cap = 0;
+	b->len = 0;
+}
+
+static int buffer_grow(struct buffer *b, size_t len) {
+	if (len > b->cap-b->len) {
+		size_t cap = (b->cap*2) + len;
+		char *buf = realloc(b->buf, cap);
+		assert(buf);
+		if (!buf) {
+			buffer_free(b);
+			return -1;
+		}
+		b->buf = buf;
+		b->cap = cap;
+	}
+	return 0;
+}
+
+static int buffer_write(struct buffer *b, const void *buf, size_t len) {
+	if (buffer_grow(b, len) == -1) {
+		return -1;
+	}
+	memcpy(&b->buf[b->len], buf, len);
+	b->len += len;
+	return 0;
+}
+
+static int buffer_append_char(struct buffer *b, unsigned char c) {
+	if (buffer_grow(b, 1) == -1) {
+		return -1;
+	}
+	b->buf[b->len++] = c;
+	return 0;
+}
+
+static const char *buffer_str(struct buffer *b) {
+	if (!b->buf || b->len == 0) {
+		return NULL;
+	}
+	if (b->buf[b->len-1] != '\0') {
+		if (buffer_append_char(b, '\0') == -1) {
+			return NULL;
+		}
+	}
+	return b->buf;
+}
+
+// ANSI Parsing
+
 #define RUNE_SELF 0x80
 
 static inline bool is_numeric(unsigned char c) {
@@ -329,20 +391,6 @@ static inline bool is_crtl_seq_start(unsigned char c) {
 	return c == '\\' || c == '[' || c == '(' || c == ')';
 }
 
-// static inline int64_t has_ansi(const unsigned char *p, int64_t length) {
-// 	int64_t i;
-// 	for (i = 0; i < length; i++) {
-// 		switch (p[i]) {
-// 		case '\x0e':
-// 		case '\x0f':
-// 		case '\x1b':
-// 		case '\x08':
-// 			return i;
-// 		}
-// 	}
-// 	return -1;
-// }
-
 static inline int64_t has_ansi(const unsigned char *s) {
 	const unsigned char *p = s;
 	unsigned char c;
@@ -353,7 +401,7 @@ static inline int64_t has_ansi(const unsigned char *s) {
 			case '\x0f':
 			case '\x1b':
 			case '\x08':
-				return p - s;
+				return p - s - 1;
 			}
 		}
 	}
@@ -402,11 +450,6 @@ static int64_t decode_last_rune_in_string(const unsigned char *p, int64_t length
 	}
 	return size;
 }
-
-// typedef struct {
-// 	size_t start;
-// 	size_t end;
-// } char_range;
 
 int next_ansi_escape_sequence(const char *s, int64_t length, int64_t *start, int64_t *end) {
 	const unsigned char *p = (const unsigned char *)s;
@@ -488,9 +531,33 @@ int next_ansi_escape_sequence(const char *s, int64_t length, int64_t *start, int
 	return -1;
 }
 
-int strip_ansi(const char *s, int64_t length, char **buf, int64_t *bufsize) {
-
-	return -1;
+int strip_ansi(const char *s, int64_t length, struct buffer *b) {
+	int64_t start, end;
+	int64_t prev = 0;
+	int i = 0;
+	while (i < length) {
+		int rc = next_ansi_escape_sequence(&s[i], length-i, &start, &end);
+		// fprintf(stderr, "i: %i start: %lli end: %lli\n", i, start, end); // WARN
+		if (rc == -1 || start == -1) {
+			break;
+		}
+		start += i;
+		i += end;
+		if (start-prev > 0) {
+			// fprintf(stderr, "writing: %lli\n", start); // WARN
+			if (buffer_write(b, &s[prev], start-prev) == -1) {
+				return -1;
+			}
+		}
+		prev = i;
+	}
+	if (prev == 0) {
+		// no ANSI escape sequences found
+		buffer_write(b, s, length); // copy whole string
+	} else {
+		buffer_write(b, &s[prev], length-prev);
+	}
+	return 0;
 }
 
 int process_stdin() {
@@ -531,67 +598,64 @@ int process_stdin() {
 	// // printf("%s", buf);
 	// printf("##########\n");
 
-	// int pcre2_match(
-	// 	const pcre2_code *code,
-	// 	PCRE2_SPTR subject,
-	// 	PCRE2_SIZE length,
-	// 	PCRE2_SIZE startoffset,
-	// 	uint32_t options,
-	// 	pcre2_match_data *match_data,
-	// 	pcre2_match_context *mcontext
-	// );
-	uint32_t options = PCRE2_NO_UTF_CHECK;
-	int rc = pcre2_match(
-		re,
-		(const unsigned char *)buf,
-		p-buf,
-		0,
-		options,
-		match_data,
-		mcontext
-	);
-	printf("rc: %d\n", rc);
-	if (rc < 0) {
-		print_pcre2_error(rc, "match failed");
-	}
-
 	// replace_all(buf, p-buf);
+
+	// fprintf(stderr, "process_stdin: done\n"); // WARN
+	struct buffer b = { 0 };
+	buffer_grow(&b, p-buf);
+	if (strip_ansi(buf, p-buf, &b) == -1) {
+		buffer_free(&b);
+		return -1;
+	}
 	free(buf);
+
+	fwrite(b.buf, 1, b.len, stdout);
+	buffer_free(&b);
 
 	return 0;
 
 error:
 	free(buf);
+
+	// buffer_free(b);
 	return 1;
 }
 
 int main(int argc, char const *argv[]) {
+	// TODO: close stdout on exit
 	setlocale(LC_ALL, "");
 
-	// const char *test = "\x1b[1mhello \x1b[mw\x1b.7o\x1b.8r\x1b(Bl\x1b[2@d";
-	const char *test = "\x1b[1mhello \x1b[Kworld";
-	const int test_len = strlen(test);
-	// char_range range = { 0 };
+	// // const char *test = "\x1b[1mhello \x1b[mw\x1b.7o\x1b.8r\x1b(Bl\x1b[2@d";
+	// const char *test = "\x1b[1mhello \x1b[Kworld";
+	// const int test_len = strlen(test);
+	// // char_range range = { 0 };
+	// {
+	// 	struct buffer buf = { 0 };
+	// 	int rc = strip_ansi(test, test_len, &buf);
+	// 	printf("rc: %i outsize: %zu\n", rc, buf.len);
+	// 	printf("escaped: '%s'\n", buffer_str(&buf));
+	// 	return 0;
+	// }
 
-	int i = 0;
-	int64_t prev = 0;
-	int64_t start, end;
-	while (i < test_len) {
-		int rc = next_ansi_escape_sequence(&test[i], test_len-i, &start, &end);
-		if (rc == -1 || start == -1) {
-			break;
-		}
-		start += i;
-		i += end;
-		printf("i: %d start: %d end: %d\n", i, start, end);
-		printf("'%.*s'\n", start, &test[prev]);
+	// int i = 0;
+	// int64_t prev = 0;
+	// int64_t start, end;
+	// while (i < test_len) {
+	// 	int rc = next_ansi_escape_sequence(&test[i], test_len-i, &start, &end);
+	// 	if (rc == -1 || start == -1) {
+	// 		break;
+	// 	}
+	// 	start += i;
+	// 	i += end;
+	// 	printf("i: %d start: %d end: %d\n", i, start, end);
+	// 	printf("'%.*s'\n", start, &test[prev]);
 
-		prev = i;
-	}
-	if (prev > 0) {
-		printf("'%.*s'\n", test_len, &test[prev]);
-	}
-	return 0;
+	// 	prev = i;
+	// }
+	// if (prev > 0) {
+	// 	printf("'%.*s'\n", test_len, &test[prev]);
+	// }
+	// return 0;
 
 
 	// const char *test = "日a本b語ç日ð本Ê語þ日¥本¼語i日";
@@ -605,8 +669,8 @@ int main(int argc, char const *argv[]) {
 	// free(s);
 	// return 0;
 
-	int ret = compile_pattern();
-	printf("ret: %d\n", ret);
+	// int ret = compile_pattern();
+	// printf("ret: %d\n", ret);
 
 	return process_stdin();
 }

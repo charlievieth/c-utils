@@ -22,7 +22,7 @@ CFLAGS+=-Wno-gnu-zero-variadic-macro-arguments
 #
 # Memory sanitizer:
 #
-CFLAGS+=-fsanitize=address -g
+# CFLAGS+=-fsanitize=address -g
 #
 # UB sanitizer:
 #
