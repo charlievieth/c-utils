@@ -70,3 +70,7 @@ clean:
 .PHONY: compile-commands
 compile-commands:
 	bear fake-gcc $(LDFLAGS) $(CFLAGS) -o $(OUT) main.c
+
+install: build
+	mkdir -p ${PWD}/bin
+	ln -sf ${PWD}/bin/strip-ansi ${HOME}/bin/.
