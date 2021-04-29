@@ -409,7 +409,7 @@ error:
 int main(int argc, char const *argv[]) {
 	// TODO: close stdout on exit
 	setlocale(LC_ALL, "");
-	const int benchmark = 10000;
+	const int benchmark = 0;
 
 	if (argc <= 1 || strcmp(argv[1], "-") == 0) {
 		if (process_fildes(STDIN_FILENO, STDOUT_FILENO, benchmark) == -1) {
