@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <pcre2.h>
 
@@ -215,15 +216,6 @@ int main(void) {
 }
 */
 
-
-static int read_ignoring_eintrio(int fd, void *buf, size_t size) {
-	int n;
-	do {
-		n = read(fd, buf, size);
-	} while (errno == EINTR);
-	return n;
-}
-
 int replace_all(const char *subject, size_t length) {
 	size_t bufsize = length + 512;
 	char *buf = malloc(bufsize);
@@ -292,12 +284,16 @@ struct buffer {
 	size_t len;
 };
 
+static void buffer_reset(struct buffer *b) {
+	b->cap = 0;
+	b->len = 0;
+}
+
 static void buffer_free(struct buffer *b) {
 	assert(b);
 	free(b->buf);
 	b->buf = NULL;
-	b->cap = 0;
-	b->len = 0;
+	buffer_reset(b);
 }
 
 static int buffer_grow(struct buffer *b, size_t len) {
@@ -560,6 +556,22 @@ int strip_ansi(const char *s, int64_t length, struct buffer *b) {
 	return 0;
 }
 
+static int read_ignoring_eintrio(int fd, void *buf, size_t size) {
+	int n;
+	do {
+		n = read(fd, buf, size);
+	} while (errno == EINTR);
+	return n;
+}
+
+static int write_ignoring_eintrio(int fd, void *buf, size_t size) {
+	int n;
+	do {
+		n = write(fd, buf, size);
+	} while (errno == EINTR);
+	return n;
+}
+
 int process_stdin() {
 	const int64_t min_read = 512;
 	int64_t cap = 32 * 1024;
@@ -603,14 +615,27 @@ int process_stdin() {
 	// fprintf(stderr, "process_stdin: done\n"); // WARN
 	struct buffer b = { 0 };
 	buffer_grow(&b, p-buf);
-	if (strip_ansi(buf, p-buf, &b) == -1) {
-		buffer_free(&b);
-		return -1;
+
+	// WARN WARN WARN
+	for (int i = 0; i < 100; i++) {
+		buffer_reset(&b);
+		if (strip_ansi(buf, p-buf, &b) == -1) {
+			buffer_free(&b);
+			return -1;
+		}
+		write_ignoring_eintrio(STDOUT_FILENO, b.buf, b.len);
 	}
 	free(buf);
-
-	fwrite(b.buf, 1, b.len, stdout);
 	buffer_free(&b);
+
+	// if (strip_ansi(buf, p-buf, &b) == -1) {
+	// 	buffer_free(&b);
+	// 	return -1;
+	// }
+	// free(buf);
+
+	// fwrite(b.buf, 1, b.len, stdout);
+	// buffer_free(&b);
 
 	return 0;
 
@@ -621,9 +646,109 @@ error:
 	return 1;
 }
 
+int process_fildes(int fd_in, int fd_out, int benchmark) {
+	struct buffer b = { 0 };
+
+	const int64_t min_read = 512;
+	int64_t cap = 32 * 1024;
+	assert(cap > min_read); // sanity check
+
+	char *buf = malloc(cap);
+	assert(buf);
+	char *p = buf;
+
+	ssize_t n;
+	while (1) {
+		int64_t len = p - buf;
+		if ((cap - len) < min_read) {
+			char *new_buf = realloc(buf, cap * 2);
+			assert(new_buf);
+			if (!new_buf) {
+				goto error;
+			}
+			cap *= 2;
+			buf = new_buf;
+			p = &buf[len];
+		}
+		if ((n = read_ignoring_eintrio(fd_in, p, cap-len)) <= 0) {
+			break;
+		}
+		p += n;
+	};
+	if (n < 0) {
+		perror("read");
+		goto error;
+	}
+	p[0] = '\0';
+
+	buffer_grow(&b, p-buf);
+
+	if (benchmark <= 0) {
+		if (strip_ansi(buf, p-buf, &b) == -1) {
+			goto error;
+		}
+		size_t off = 0;
+		while (off < b.len) {
+			n = write_ignoring_eintrio(fd_out, &b.buf[off], b.len-off);
+			if (n == -1) {
+				perror("write");
+				goto error;
+			}
+			off += n;
+		}
+	} else {
+		for (int i = 0; i < benchmark; i++) {
+			buffer_reset(&b);
+			if (strip_ansi(buf, p-buf, &b) == -1) {
+				goto error;
+			}
+			size_t off = 0;
+			while (off < b.len) {
+				n = write_ignoring_eintrio(fd_out, &b.buf[off], b.len-off);
+				if (n == -1) {
+					perror("write");
+					goto error;
+				}
+				off += n;
+			}
+		}
+	}
+
+	free(buf);
+	buffer_free(&b);
+	return 0;
+
+error:
+	free(buf);
+	buffer_free(&b);
+	return 1;
+}
+
 int main(int argc, char const *argv[]) {
 	// TODO: close stdout on exit
 	setlocale(LC_ALL, "");
+	const int benchmark = 10000;
+
+	if (argc <= 1 || strcmp(argv[1], "-") == 0) {
+		if (process_fildes(STDIN_FILENO, STDOUT_FILENO, benchmark) == -1) {
+			return 1;
+		}
+	}
+	for (int i = 1; i < argc; i++) {
+		 int fd = open(argv[i], O_RDONLY);
+		 if (fd < 0) {
+		 	perror("open");
+		 	fprintf(stderr, "error opening file: %s\n", argv[i]);
+		 	return 1;
+		 }
+		 if (process_fildes(fd, STDOUT_FILENO, benchmark) == -1) {
+		 	fprintf(stderr, "error processing file: %s\n", argv[i]);
+		 	return 1;
+		 }
+	}
+	return 0;
+
+	// return process_stdin();
 
 	// // const char *test = "\x1b[1mhello \x1b[mw\x1b.7o\x1b.8r\x1b(Bl\x1b[2@d";
 	// const char *test = "\x1b[1mhello \x1b[Kworld";
@@ -672,7 +797,6 @@ int main(int argc, char const *argv[]) {
 	// int ret = compile_pattern();
 	// printf("ret: %d\n", ret);
 
-	return process_stdin();
 }
 
 /*
