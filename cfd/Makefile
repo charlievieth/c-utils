@@ -56,11 +56,11 @@ all: clean build
 
 .PHONY: address
 address: CFLAGS+=-fsanitize=address
-address: run
+address: build
 
 .PHONY: race
 race: CFLAGS+=-fsanitize=thread
-race: run
+race: build
 
 # build the binary (we do this so that we generate debug symbols)
 cfd:
@@ -72,7 +72,7 @@ cfd:
 #
 # @$(RM) $(OUT).o
 .PHONY: build
-build: cfd
+build: clean cfd
 
 .PHONY: debug
 debug: CFLAGS+=-DDEBUG -fsanitize=thread
