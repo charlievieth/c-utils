@@ -93,32 +93,26 @@ static inline int expand_buffer(char **buf, size_t *cap, size_t len) {
 	return 0;
 }
 
-#define prefix_len 2
-static const char *const slash_prefix = "./";
-static const char *const ansii_prefix = "\x1b[";
-static_assert(strlen(slash_prefix) == prefix_len, "slash_prefix");
-static_assert(strlen(ansii_prefix) == prefix_len, "ansii_prefix");
-
 static ssize_t trim_prefix(char **dst, size_t *dst_cap, const char *buf, const size_t buf_len) {
 	if (unlikely(expand_buffer(dst, dst_cap, buf_len) != 0)) {
 		return -1;
 	}
 	char *d = *dst;
-	if (buf_len > prefix_len) {
-		if (memcmp(buf, slash_prefix, prefix_len) == 0) {
-			size_t n = buf_len - prefix_len;
-			memcpy(d, &buf[prefix_len], n);
+	if (buf_len > 2) {
+		if (memcmp(buf, "./", 2) == 0) {
+			size_t n = buf_len - 2;
+			memcpy(d, &buf[2], n);
 			return n;
 		}
 		// TODO: remove and write ANSII prefix then use the
 		// above logic to strip the prefix.
-		if (memcmp(buf, ansii_prefix, prefix_len) == 0) {
+		if (memcmp(buf, "\x1b[", 2) == 0) {
 			const char *p = memchr(buf, 'm', buf_len);
 			if (p) {
 				ssize_t i = p - buf;
 				memcpy(d, buf, i + 1);
-				memcpy(&d[i + 1], &buf[i + prefix_len + 1], buf_len - i - prefix_len);
-				return buf_len - prefix_len;;
+				memcpy(&d[i + 1], &buf[i + 2 + 1], buf_len - i - 2);
+				return buf_len - 2;;
 			}
 		}
 	}
