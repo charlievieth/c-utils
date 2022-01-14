@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <stdint.h>
 #include <errno.h>
 #include <unistd.h>
 #include <stdbool.h>
@@ -48,6 +49,10 @@ static void *xrealloc(void *p, size_t n) {
 #define powerof2(x) ((((x)-1)&(x))==0)
 #endif
 
+#if !defined(SIZE_T_MAX) && !defined(SIZE_MAX)
+#error "missing SIZE_T_MAX and SIZE_MAX"
+#endif
+
 static inline size_t p2roundup(size_t n) {
 	if (!powerof2(n)) {
 		n--;
@@ -56,13 +61,17 @@ static inline size_t p2roundup(size_t n) {
 		n |= n >> 4;
 		n |= n >> 8;
 		n |= n >> 16;
-#if SIZE_T_MAX > 0xffffffffU
+#if SIZE_T_MAX > 0xffffffffU || SIZE_MAX > 0xffffffffU
 		n |= n >> 32;
 #endif
 		n++;
 	}
 	return (n);
 }
+
+#ifndef SSIZE_MAX
+#define SSIZE_MAX PTRDIFF_MAX
+#endif
 
 static inline int expand_buffer(char **buf, size_t *cap, size_t len) {
 	if (unlikely(len > (size_t)SSIZE_MAX + 1)) {
@@ -72,7 +81,7 @@ static inline int expand_buffer(char **buf, size_t *cap, size_t len) {
 	if (unlikely(*cap <= len)) {
 		// avoid overflow
 		size_t newcap;
-		if (len == (size_t)SSIZE_MAX + 1) {
+		if (len >= (size_t)SSIZE_MAX + 1) {
 			newcap = (size_t)SSIZE_MAX + 1;
 		} else {
 			newcap = p2roundup(len + *cap);
