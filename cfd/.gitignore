@@ -1,3 +1,5 @@
 /cfd
 *.dSYM
 /compile_commands.json
+/.cache
+/tags
