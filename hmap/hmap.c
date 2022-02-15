@@ -77,7 +77,8 @@ char *xasprintf(const char *format, ...) {
 }
 
 static void xassertf_impl(const char *filename, int line, const char *assertion, const char *format, ...)
-	__attribute__((format (printf, 4, 5)));
+	__attribute__((format (printf, 4, 5)))
+	__attribute__((__noreturn__));
 
 static void xassertf_impl(const char *filename, int line, const char *assertion, const char *format, ...) {
 	fflush(stdout);
@@ -90,6 +91,9 @@ static void xassertf_impl(const char *filename, int line, const char *assertion,
 	fprintf(stderr, "\n");
 	abort();
 }
+
+static void xassert_impl(const char *filename, int line, const char *assertion)
+	__attribute__((__noreturn__));
 
 static void xassert_impl(const char *filename, int line, const char *assertion) {
 	fflush(stdout);
@@ -168,11 +172,6 @@ static inline uint32_t murmurhash32(uint32_t key, uint32_t seed) {
 
 ////////////////////////////////////////////////////////////////////////
 
-static void noop_free(void* data) {
-	(void)data;
-	return;
-}
-
 // TODO: require users to specify EMPTY_VALUE on insert or
 // automaticaly convert NULL values to EMPTY_VALUE ???
 static size_t _empty = 0;
@@ -210,10 +209,6 @@ size_t hmap_capacity(const hmap *h) {
 	return bucket_size(h->b);
 }
 
-static inline size_t hmap_inc_index(const hmap *h, size_t index) {
-	return ++index != bucket_size(h->b) ? index : 0;
-}
-
 static inline bool hmap_growing(const hmap *h) {
 	return h->oldbuckets != NULL;
 }
@@ -224,16 +219,20 @@ static bool hmap_needs_to_grow(const hmap *h) {
 	return h->b == 0 || (h->count + 1) * 4 / 3 > bucket_size(h->b);
 }
 
-static inline void hmap_free(const hmap *h, void **p) {
-	if (*p && *p != EMPTY_VALUE) {
+// hmap_usable_free returns if the `free` function used by hmap h
+// is not a no-op.
+static bool hmap_usable_free(const hmap *h) {
+	// ignore the noop_free function
+	return (h->free_func == NULL) || (h->free_func != noop_free);
+}
+
+static inline void hmap_free(const hmap *h, void *p) {
+	if (p && p != EMPTY_VALUE) {
 		if (h->free_func) {
-			h->free_func(*p);
+			h->free_func(p);
 		} else {
-			free(*p); // WARN: getting a clang warning here
+			free(p);
 		}
-#ifndef NDEBUG
-		*p = NULL;
-#endif // NDEBUG
 	}
 }
 
@@ -258,7 +257,7 @@ static void hmap_dump(const hmap *h, bool omitempty) {
 		fprintf(stderr, "  item %5zu: key = %10u probe = %2u value = %p\n",
 			i, e.key, e.probe, e.value);
 	}
-	fprintf(stderr, "Hashtable %p: size=%zu items=%zu counted=%zu probe_max=%zu\n",
+	fprintf(stderr, "hmap %p: size=%zu items=%zu counted=%zu probe_max=%zu\n",
 		(const void*)h, bucket_size(h->b), h->count, count, probe_max);
 }
 
@@ -289,30 +288,86 @@ static void hmap_dump(const hmap *h, bool omitempty) {
 
 #endif // NDEBUG
 
-static void hmap_free_entries(const hmap *h) {
+static int compare_uint32_t(const void *p1, const void *p2) {
+   const uint32_t s1 = *(const uint32_t*)p1;
+   const uint32_t s2 = *(const uint32_t*)p2;
+   if (s1 > s2) {
+      return 1;
+   }
+   if (s1 < s2) {
+      return -1;
+   }
+   return 0;
+}
+
+static void hmap_calc_probe_stats(const hmap *h, double *avg_probe, uint32_t *med_probe) {
+	size_t sum = 0;
+	size_t len = hmap_size(h);
+	uint32_t *probes = xcalloc(len, sizeof(uint32_t));
+
+	for (size_t i = 0, j = 0; i < hmap_capacity(h); i++) {
+		if (h->buckets[i].value) {
+			sum += h->buckets[i].probe;
+			probes[j++] = h->buckets[i].probe;
+		}
+	}
+	qsort(probes, len, sizeof(uint32_t), compare_uint32_t);
+
+	*med_probe = probes[len / 2];
+	*avg_probe = (double)sum / (double)len;
+	free(probes);
+}
+
+// TODO: move me
+void hmap_print_stats(const hmap *h) {
+	uint32_t probe_median;
+	double probe_avg;
+	hmap_calc_probe_stats(h, &probe_avg, &probe_median);
+
+	double load = (double)hmap_size(h) / (double)hmap_capacity(h);
+
+	fprintf(stderr, "hmap %p: size=%zu size=%zu load=%.2f\n",
+		(const void*)h, bucket_size(h->b), h->count, load);
+	if (h->stats) {
+		fprintf(stderr, "  max probe:        %zu\n", h->stats->max_probe);
+		fprintf(stderr, "  avg probe:        %.2f\n", probe_avg);
+		fprintf(stderr, "  med probe:        %zu\n", (size_t)probe_median);
+		fprintf(stderr, "  insert ops:       %zu\n", h->stats->insert_ops);
+		fprintf(stderr, "  insert count:     %zu\n", h->stats->insert_count);
+		fprintf(stderr, "  insert ops/count: %.2f\n",
+			(double)h->stats->insert_ops / (double)h->stats->insert_count);
+		fprintf(stderr, "  insert ops max:   %zu\n", h->stats->max_insert_ops);
+		fprintf(stderr, "  max load:         %.2f\n", h->stats->max_load);
+	} else {
+		fprintf(stderr, "  avg probe: %.2f\n", probe_avg);
+		fprintf(stderr, "  med probe: %zu\n", (size_t)probe_median);
+		fprintf(stderr, "  stats:     NULL\n");
+	}
+}
+
+static void hmap_clear_entries(const hmap *h) {
 	assert(hmap_is_consistent(h));
-	if (h->count > 0 && (h->free_func == NULL || h->free_func != noop_free)) {
+	if (h->count == 0) {
+		return;
+	}
+	if (hmap_usable_free(h)) {
 		if (h->buckets) {
 			hmap_entry *b = h->buckets;
 			for (size_t i = 0; i < bucket_size(h->b); i++) {
-				if (b[i].value) {
-					hmap_free(h, &b[i].value);
-				}
+				hmap_free(h, b[i].value);
 			}
 		}
 		if (h->oldbuckets) {
 			hmap_entry *b = h->oldbuckets;
 			for (size_t i = 0; i < bucket_size(h->b - 1); i++) {
-				if (b[i].value) {
-					hmap_free(h, &b[i].value);
-				}
+				hmap_free(h, b[i].value);
 			}
 		}
 	}
 }
 
 void hmap_clear(hmap *h) {
-	hmap_free_entries(h);
+	hmap_clear_entries(h);
 	if (h->oldbuckets) {
 		free(h->oldbuckets);
 		h->oldbuckets = NULL;
@@ -325,10 +380,10 @@ void hmap_clear(hmap *h) {
 }
 
 void hmap_destroy(hmap *h) {
-	hmap_free_entries(h);
-	if (h->oldbuckets) {
-		free(h->oldbuckets);
+	if (!h) {
+		return;
 	}
+	hmap_clear_entries(h);
 	if (h->buckets) {
 		free(h->buckets);
 	}
@@ -358,13 +413,18 @@ static inline void hmap_record_insert_stats(hmap *h, size_t ops, uint32_t probe)
 	}
 }
 
+static inline size_t hmap_key_index(const hmap *h, hmap_key key) {
+	return murmurhash32(key, h->seed) & bucket_mask(h->b);
+}
+
 static void insert(hmap *h, hmap_key key, void *value) {
 	uint32_t probe = 0;
-	uint32_t hash = murmurhash32(key, h->seed);
-	size_t index = hash & bucket_mask(h->b);
 	size_t ops = 0;
 
-	hmap_entry *e = &h->buckets[index];
+	// TODO: is using values faster here?
+	hmap_entry *e = &h->buckets[hmap_key_index(h, key)];
+	const hmap_entry *last = &h->buckets[bucket_size(h->b)-1];
+
 	for (;;) {
 		ops++;
 		if (!e->value) {
@@ -378,7 +438,7 @@ static void insert(hmap *h, hmap_key key, void *value) {
 		}
 		if (e->key == key) {
 			if (e->value != value) {
-				hmap_free(h, &e->value);
+				hmap_free(h, e->value);
 			}
 			e->value = value;
 			break;
@@ -390,17 +450,14 @@ static void insert(hmap *h, hmap_key key, void *value) {
 				.key = key,
 				.probe = probe,
 			};
+
 			value = tmp.value;
 			key = tmp.key;
 			probe = tmp.probe;
 		}
-		assert(index + 1 <= bucket_size(h->b));
-		// TODO: we may be able to use the bucket_mask here
-		index++;
-		if (index == bucket_size(h->b)) {
-			index = 0;
-		}
-		e = &h->buckets[index]; // TODO: bump pointer
+		// TODO: we may be able to use the bucket_mask here if
+		// we want to use values instead of bumping pointers
+		e = e != last ? e + 1 : &h->buckets[0];
 		probe++;
 	}
 
@@ -440,27 +497,37 @@ void hmap_assign(hmap *h, hmap_key key, void *value) {
 	assert(hmap_is_consistent(h));
 }
 
-void *hmap_get(const hmap *h, hmap_key key) {
+// WARN: do this !!!
+//
+bool hmap_find(const hmap *h, hmap_key key, void **value) {
 	assert(h);
 
 	uint32_t probe = 0;
-	uint32_t hash = murmurhash32(key, h->seed);
-	size_t index = hash & bucket_mask(h->b);
+	const hmap_entry *e = &h->buckets[hmap_key_index(h, key)];
+	const hmap_entry *last = &h->buckets[bucket_size(h->b)-1];
 
-	const hmap_entry *e = &h->buckets[index];
 	while (e->value) {
 		if (e->key == key) {
-			return e->value;
+			if (value) {
+				*value = e->value;
+			}
+			return true;
 		}
 		if (e->probe < probe) {
 			break;
 		}
-		index = hmap_inc_index(h, index);
-		e = &h->buckets[index];
+		e = e != last ? e + 1 : &h->buckets[0];
 		probe++;
 	}
 
-	return NULL;
+	return false;
+}
+
+// hmap_get is a shorthand for hmap_find.
+// WARN: cannot distinguish between not-found and NULL values.
+void *hmap_get(const hmap *h, hmap_key key) {
+	void *value;
+	return hmap_find(h, key, &value) ? value : NULL;
 }
 
 // TODO: move, ownership (return value in that case)
@@ -477,7 +544,7 @@ bool hmap_delete(hmap *h, hmap_key key) {
 	while (e->value) {
 		if (e->key == key) {
 			// TODO: ownership
-			hmap_free(h, &e->value);
+			hmap_free(h, e->value);
 			found = true;
 
 			// shift buckets: n == next entry
@@ -570,9 +637,9 @@ static void test_hmap_n(int n) {
 
 	for (int i = 0; i < n; i++) {
 		// don't allow for duplicate keys!
-		uint32_t key = (uint32_t)random();
+		uint32_t key = (uint32_t)random() / 4096;
 		while (hmap_get(h, key) != NULL) {
-			key = (uint32_t)random();
+			key = (uint32_t)random() / 4096;
 		}
 		keys[i].key = key;
 		keys[i].value = EMPTY_VALUE;
@@ -594,6 +661,7 @@ static void test_hmap_n(int n) {
 	double load = (double)h->count / (double)bucket_size(h->b);
 	fprintf(stderr, "          size=%zu count=%zu load=%.2f\n",
 		bucket_size(h->b), h->count, load);
+	hmap_print_stats(h);
 
 
 	// Test delete / add
@@ -645,6 +713,7 @@ static void test_hmap_n(int n) {
 	}
 	xassertf(h->count == 0, "count=%zu want: %i", h->count, 0);
 
+	fprintf(stderr, "\n");
 	hmap_destroy(h);
 	free(keys);
 }
@@ -679,23 +748,30 @@ int main(int argc, char const *argv[]) {
 	(void)argc;
 	(void)argv;
 
-	for (int i = 0; i < 128; i++) {
+	for (int i = 0; i < 1; i++) {
 		/* code */
 		test_hmap();
 	}
 	return 0;
 
-	srandomdev();
+	// srandomdev();
 
-	for (int i = 0; i < 8192; i++) {
+	// for (int i = 0; i < 8192; i++) {
 		hmap *h = new_hmap(0);
 		// int value = 0;
-		for (uint32_t j = 0; j < 22651; j++) {
-			hmap_assign(h, random(), EMPTY_VALUE);
+		for (uint32_t j = 0; j < 1021; j++) {
+			if ((j & 1) != 0) {
+				hmap_assign(h, j + 512, EMPTY_VALUE);
+			} else {
+				hmap_assign(h, j, EMPTY_VALUE);
+			}
+			// hmap_assign(h, j, EMPTY_VALUE);
+			// hmap_assign(h, random(), EMPTY_VALUE);
 		}
-		free(h->buckets);
-		free(h);
-	}
+		// hmap_dump(h, true);
+		hmap_print_stats(h);
+		hmap_destroy(h);
+	// }
 
 	// hmap_dump(h, true);
 
