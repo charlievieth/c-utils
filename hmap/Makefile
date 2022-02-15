@@ -2,7 +2,7 @@
 # CC=fake-gcc
 # Debug (-g creates the *.dSYM directory)
 #
-CFLAGS=-Og -std=gnu11 -g -ggdb3
+CFLAGS=-O2 -std=gnu11 -g -ggdb3
 # CFLAGS=-O3 -flto -std=gnu11
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
@@ -20,12 +20,12 @@ CFLAGS+=-Winline -Wdisabled-optimization
 # Experimental
 #
 CFLAGS+=-Wstring-compare
-CFLAGS+=-Wsuggest-attribute=pure
-CFLAGS+=-Wsuggest-attribute=const
-CFLAGS+=-Wsuggest-attribute=noreturn
-CFLAGS+=-Wsuggest-attribute=format
-CFLAGS+=-Wsuggest-attribute=cold
-CFLAGS+=-Wsuggest-attribute=malloc
+# CFLAGS+=-Wsuggest-attribute=pure
+# CFLAGS+=-Wsuggest-attribute=const
+# CFLAGS+=-Wsuggest-attribute=noreturn
+# CFLAGS+=-Wsuggest-attribute=format
+# CFLAGS+=-Wsuggest-attribute=cold
+# CFLAGS+=-Wsuggest-attribute=malloc
 
 # This looks useful
 CFLAGS+=-Wunused-macros
@@ -76,8 +76,9 @@ build: CFLAGS+=-DNDEBUG
 build: clean hmap
 
 .PHONY: debug
-debug: CFLAGS+=-DDEBUG -fsanitize=thread
-debug: run clean
+debug: CFLAGS+=-DDEBUG -fsanitize=address -fsanitize=pointer-compare
+debug: clean hmap
+	./$(OUT)
 
 .PHONY: run
 run: clean build
