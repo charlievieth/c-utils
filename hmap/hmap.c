@@ -76,10 +76,10 @@ char *xasprintf(const char *format, ...) {
 	return ret;
 }
 
-static void xassert_impl(const char *filename, int line, const char *assertion, const char *format, ...)
+static void xassertf_impl(const char *filename, int line, const char *assertion, const char *format, ...)
 	__attribute__((format (printf, 4, 5)));
 
-static void xassert_impl(const char *filename, int line, const char *assertion, const char *format, ...) {
+static void xassertf_impl(const char *filename, int line, const char *assertion, const char *format, ...) {
 	fflush(stdout);
 	fprintf(stderr, "%s:%d: failed assertion: %s\n", filename, line, assertion);
 	fprintf(stderr, "  ");
@@ -91,8 +91,17 @@ static void xassert_impl(const char *filename, int line, const char *assertion, 
 	abort();
 }
 
-#define xassert(e, format, ...) \
-	(__builtin_expect(!(e), 0) ? xassert_impl(__FILE__, __LINE__, #e, format, ##__VA_ARGS__) : (void)0)
+static void xassert_impl(const char *filename, int line, const char *assertion) {
+	fflush(stdout);
+	fprintf(stderr, "%s:%d: failed assertion: %s\n", filename, line, assertion);
+	abort();
+}
+
+#define xassertf(e, format, ...) \
+	(__builtin_expect(!(e), 0) ? xassertf_impl(__FILE__, __LINE__, #e, format, ##__VA_ARGS__) : (void)0)
+
+#define xassert(e) \
+	(__builtin_expect(!(e), 0) ? xassert_impl(__FILE__, __LINE__, #e) : (void)0)
 
 ////////////////////////////////////////////////////////////////////////
 
@@ -159,43 +168,10 @@ static inline uint32_t murmurhash32(uint32_t key, uint32_t seed) {
 
 ////////////////////////////////////////////////////////////////////////
 
-// typedef unsigned int ht_key_t;
-typedef uint32_t hmap_key;
-
-typedef bool (*hmap_iter_func)(hmap_key key, void* value, void* userdata);
-
-typedef void (*hmap_free_func)(void* data);
-
 static void noop_free(void* data) {
 	(void)data;
 	return;
 }
-typedef struct {
-	void     *value;
-	hmap_key key;
-	uint32_t probe;
-} hmap_entry;
-
-// TODO: record load factor - at least while testing
-typedef struct {
-	size_t max_insert_ops;
-	size_t max_probe;
-	size_t insert_ops;
-	size_t insert_count;
-	double max_load;
-} hmap_stats;
-
-typedef struct {
-	size_t         count; // live cells
-	uint32_t       seed;  // hash seed
-	uint8_t        b;     // log_2 of # of buckets (can hold up to loadFactor * 2^B items)
-	hmap_entry     *buckets;
-	hmap_entry     *oldbuckets;
-	hmap_free_func free_func;
-
-	// WARN
-	hmap_stats     *stats;
-} hmap;
 
 // TODO: require users to specify EMPTY_VALUE on insert or
 // automaticaly convert NULL values to EMPTY_VALUE ???
@@ -226,11 +202,11 @@ static inline size_t bucket_size_for(size_t hint) {
 	return 3; // 8
 }
 
-static size_t hmap_size(const hmap *h) {
+size_t hmap_size(const hmap *h) {
 	return h->count;
 }
 
-static size_t hmap_capacity(const hmap *h) {
+size_t hmap_capacity(const hmap *h) {
 	return bucket_size(h->b);
 }
 
@@ -304,6 +280,11 @@ static bool hmap_is_consistent(const hmap *h) {
 
 static bool hmap_is_consistent(const hmap *h) {
 	return true;
+}
+
+static void hmap_dump(const hmap *h, bool omitempty) {
+	(void)h;
+	(void)omitempty;
 }
 
 #endif // NDEBUG
@@ -446,7 +427,7 @@ static void hmap_grow(hmap *h) {
 	assert(h->count == oldcount);
 }
 
-static void hmap_assign(hmap *h, hmap_key key, void *value) {
+void hmap_assign(hmap *h, hmap_key key, void *value) {
 	assert(h);
 	assert(value);
 	assert(hmap_is_consistent(h));
@@ -459,7 +440,7 @@ static void hmap_assign(hmap *h, hmap_key key, void *value) {
 	assert(hmap_is_consistent(h));
 }
 
-static void *hmap_get(const hmap *h, hmap_key key) {
+void *hmap_get(const hmap *h, hmap_key key) {
 	assert(h);
 
 	uint32_t probe = 0;
@@ -484,64 +465,34 @@ static void *hmap_get(const hmap *h, hmap_key key) {
 
 // TODO: move, ownership (return value in that case)
 //
-static void hmap_delete(hmap *h, hmap_key key) {
+bool hmap_delete(hmap *h, hmap_key key) {
 	uint32_t probe = 0;
 	uint32_t hash = murmurhash32(key, h->seed);
 	size_t index = hash & bucket_mask(h->b);
 
-	// while (h->buckets[index].value) {
-	// 	if (h->buckets[index].key == key) {
-	// 		hmap_free(h, &h->buckets[index].value);
-
-	// 		size_t next = hmap_inc_index(h, index);
-
-	// 		while (h->buckets[next].value && h->buckets[next].probe > 0) {
-	// 			h->buckets[index] = h->buckets[next];
-	// 			h->buckets[index].probe -= 1;
-
-	// 			index = next;
-	// 			next = hmap_inc_index(h, index);
-	// 		}
-
-	// 		// set empty after backward shifting
-	// 		h->buckets[index].value = NULL;
-	// 		h->count--;
-
-	// 		break;
-	// 	}
-
-	// 	if (h->buckets[index].probe < probe) {
-	// 		break;
-	// 	}
-
-	// 	index = hmap_inc_index(h, index);
-	// 	probe++;
-	// }
-
-	///////////////////////////////////////////////////////////////
-	// WARN: this is broken !
-
 	hmap_entry *e = &h->buckets[index];
+	const hmap_entry *last = &h->buckets[bucket_size(h->b)-1];
+
+	bool found = false;
 	while (e->value) {
 		if (e->key == key) {
 			// TODO: ownership
 			hmap_free(h, &e->value);
+			found = true;
 
-			size_t next = hmap_inc_index(h, index);
-			hmap_entry *n = &h->buckets[next]; // TODO: bump pointer
+			// shift buckets: n == next entry
+			hmap_entry *n = e != last ? e + 1 : &h->buckets[0];
 			while (n->value && n->probe > 0) {
 				*e = *n;
 				e->probe--;
 
-				index = next;
-				next = hmap_inc_index(h, index);
 				e = n;
-				n = &h->buckets[next]; // TODO: bump pointer
+				n = n != last ? n + 1 : &h->buckets[0];
 			}
 
+			// set empty after backward shifting
 			e->value = NULL;
 			h->count--;
-
 			break;
 		}
 
@@ -549,13 +500,14 @@ static void hmap_delete(hmap *h, hmap_key key) {
 			break;
 		}
 
-		index = hmap_inc_index(h, index);
-		e = &h->buckets[index]; // TODO: bump pointer
+		e = e != last ? e + 1 : &h->buckets[0];
 		probe++;
 	}
 
 	assert(hmap_is_consistent(h));
 	assert(hmap_get(h, key) == NULL);
+
+	return found;
 }
 
 static void hmap_iter(const hmap *h, hmap_iter_func fn, void *data) {
@@ -591,20 +543,46 @@ typedef struct {
 	bool     seen;
 } key_value_pair;
 
+static bool kvs_contains(const key_value_pair *keys, size_t size, uint32_t key) {
+	for (size_t i = 0; i < size; i++) {
+		if (keys[i].key == key) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static uint32_t kvs_random_key(const key_value_pair *keys, size_t size) {
+	for (int i = 0; i < 1024; i++) {
+		uint32_t key = (uint32_t)random();
+		if (!kvs_contains(keys, size, key)) {
+			return key;
+		}
+	}
+	xassertf(false, "failed to find a random key not contained in kvs: %p", (const void*)keys);
+	abort();
+}
+
 static void test_hmap_n(int n) {
 	hmap *h = new_hmap(0);
 	h->free_func = noop_free;
 	key_value_pair *keys = calloc(n, sizeof(key_value_pair));
 
 	for (int i = 0; i < n; i++) {
-		keys[i].key = (uint32_t)random();
+		// don't allow for duplicate keys!
+		uint32_t key = (uint32_t)random();
+		while (hmap_get(h, key) != NULL) {
+			key = (uint32_t)random();
+		}
+		keys[i].key = key;
 		keys[i].value = EMPTY_VALUE;
 		hmap_assign(h, keys[i].key, EMPTY_VALUE);
 	}
+	xassertf(hmap_size(h) == (size_t)n, "%i: hmap_size=%zu want: %i", n, hmap_size(h), n);
 
 	for (int i = 0; i < n; i++) {
 		void *p = hmap_get(h, keys[i].key);
-		assert(p == keys[i].value);
+		xassert(p == keys[i].value);
 	}
 
 	double avg_ops = (double)h->stats->insert_ops /(double)h->stats->insert_count;
@@ -621,19 +599,54 @@ static void test_hmap_n(int n) {
 	// Test delete / add
 	size_t exp_count = h->count;
 	for (int i = 0; i < n; i++) {
-		hmap_delete(h, keys[i].key);
+		xassert(hmap_delete(h, keys[i].key));
 		hmap_assign(h, keys[i].key, EMPTY_VALUE);
 	}
+	xassertf(h->count == exp_count, "count=%zu want: %zu", h->count, exp_count);
+	for (int i = 0; i < n; i++) {
+		void *p = hmap_get(h, keys[i].key);
+		xassertf(p == keys[i].value, "%i: missing key: %u", n, keys[i].key);
+	}
+
+	// Test delete unknown key
+	int num_delete_tests = n <= 128 ? n : 128;
+
+	hmap_entry *exp_buckets = xmalloc(bucket_size(h->b) * sizeof(hmap_entry));
+	memcpy(exp_buckets, h->buckets, bucket_size(h->b) * sizeof(hmap_entry));
+
+	for (int i = 0; i < num_delete_tests; i++) {
+		uint32_t key = keys[i].key + 1;
+		if (!kvs_contains(keys, n, key)) {
+			xassert(hmap_delete(h, key) == false);
+		}
+		key = kvs_random_key(keys, n);
+		xassert(hmap_get(h, key) == NULL);
+		xassert(hmap_delete(h, key) == false);
+	}
+	xassertf(h->count == exp_count, "count=%zu want: %zu", h->count, exp_count);
+	if (memcmp(exp_buckets, h->buckets, bucket_size(h->b) * sizeof(hmap_entry)) != 0) {
+		fprintf(stderr, "error: random deletes modified the hmap->buckets\n");
+		hmap_dump(h, true);
+	}
+	free(exp_buckets);
 
 	// Test delete
 	for (int i = 0; i < n; i++) {
-		hmap_delete(h, keys[i].key);
+		bool deleted = hmap_delete(h, keys[i].key);
+		if (!deleted) {
+			hmap_dump(h, true);
+		}
+		xassertf(deleted, "%i: failed to delete key: %u count=%zu i=%i",
+			n, keys[i].key, h->count, i);
 	}
 	for (int i = 0; i < n; i++) {
-		xassert(hmap_get(h, keys[i].key) == NULL, "failed to delete key: %u", keys[i].key);
+		xassertf(hmap_get(h, keys[i].key) == NULL, "%i: failed to delete key: %u count=%zu i=%i",
+			n, keys[i].key, h->count, i);
 	}
-	xassert(h->count == 0, "count=%zu want: %i", h->count, 0);
+	xassertf(h->count == 0, "count=%zu want: %i", h->count, 0);
+
 	hmap_destroy(h);
+	free(keys);
 }
 
 static void test_hmap() {
@@ -652,7 +665,6 @@ static void test_hmap() {
 		8193,
 		293, 347, 419, 499, 593, 709, 853, 1021, 1229, 1471, 1777, 2129, 2543, 3049,
 		3659, 4391, 5273, 6323, 7589, 9103, 10937, 13109, 15727, 18899, 22651,
-		1800191,
 	};
 	const int count = sizeof(test_sizes) / sizeof(test_sizes[0]);
 	for (int i = 0; i < count; i++) {
@@ -667,7 +679,10 @@ int main(int argc, char const *argv[]) {
 	(void)argc;
 	(void)argv;
 
-	test_hmap();
+	for (int i = 0; i < 128; i++) {
+		/* code */
+		test_hmap();
+	}
 	return 0;
 
 	srandomdev();
