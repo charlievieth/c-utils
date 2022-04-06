@@ -1,9 +1,16 @@
 # CC=gcc-11
 # CC=fake-gcc
 # Debug (-g creates the *.dSYM directory)
-#
+
 # CFLAGS=-O2 -std=c11 -g -flto
-CFLAGS=-O3 -flto -std=gnu11
+CFLAGS=-O3 -flto -std=gnu11 -mtune=native
+
+# Add -march=native for non-arm64 platforms
+UNAME_M := $(shell uname -m)
+ifneq ($(UNAME_M),arm64)
+	CFLAGS+=-march=native
+endif
+
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 #
