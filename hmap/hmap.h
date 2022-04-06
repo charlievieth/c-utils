@@ -40,11 +40,11 @@ typedef struct {
 } hmap_entry;
 
 typedef struct {
-	size_t         count; // live cells
-	uint32_t       seed;  // hash seed
-	uint8_t        b;     // log_2 of # of buckets (can hold up to loadFactor * 2^B items)
-	hmap_entry     *buckets;
-	hmap_entry     *oldbuckets;
+	size_t         count;       // live cells
+	uint32_t       seed;        // hash seed
+	uint8_t        b;           // log_2 of # of buckets (can hold up to loadFactor * 2^B items)
+	hmap_entry     *buckets;    // TOOD: rename to "bucket"
+	hmap_entry     *oldbuckets; // TOOD: rename to "oldbucket"
 	hmap_free_func free_func;
 
 	// WARN

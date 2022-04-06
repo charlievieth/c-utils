@@ -464,23 +464,49 @@ static void insert(hmap *h, hmap_key key, void *value) {
 	hmap_record_insert_stats(h, ops, probe);
 }
 
+// TODO: implement oldbucket logic
+//
+// static void hmap_evacuate(hmap *h, hmap_entry *oldbucket) {
+// 	const size_t oldsz = bucket_size(h->b - 1);
+// 	for (size_t i = 0; i < oldsz; i++) {
+// 		if (oldbucket[i].value) {
+// 			insert(h, oldbucket[i].key, oldbucket[i].value);
+// 		}
+// 	}
+// }
+
+// TODO: implement oldbucket logic
 static void hmap_grow(hmap *h) {
 	const size_t oldcount = h->count;
-	hmap_entry *ob = h->buckets;
-	const hmap_entry *oldbuckets = h->buckets;
+	hmap_entry *oldbuckets = h->buckets;
 	const uint8_t oldb = h->b;
 
 	h->b++;
 	h->buckets = xcalloc(bucket_size(h->b), sizeof(hmap_entry));
 	h->count = 0;
 
+	// TODO: record the last index that we evacuated so that
+	// we can do incremental evacuations.
+	//
+	// if (h->oldbuckets) {
+	// 	const size_t old_size = bucket_size(oldb - 1);
+	// 	for (size_t i = 0; i < old_size; i++) {
+	// 		if (h->oldbuckets[i].value) {
+	// 			insert(h, h->oldbuckets[i].key, h->oldbuckets[i].value);
+	// 		}
+	// 	}
+	// 	free(h->oldbuckets);
+	// 	h->oldbuckets = NULL;
+	// }
+	// h->oldbuckets = oldbuckets;
+
 	for (size_t i = 0; i < bucket_size(oldb); i++) {
 		if (oldbuckets[i].value) {
 			insert(h, oldbuckets[i].key, oldbuckets[i].value);
 		}
 	}
+	free(oldbuckets);
 
-	free(ob);
 	assert(h->count == oldcount);
 }
 
@@ -490,9 +516,12 @@ void hmap_assign(hmap *h, hmap_key key, void *value) {
 	assert(hmap_is_consistent(h));
 
 	insert(h, key, value);
-	if (h->count >= USABLE_FRACTION(bucket_size(h->b))) {
+	if (hmap_needs_to_grow(h)) {
 		hmap_grow(h);
 	}
+	// if (h->count >= USABLE_FRACTION(bucket_size(h->b))) {
+	// 	hmap_grow(h);
+	// }
 
 	assert(hmap_is_consistent(h));
 }
