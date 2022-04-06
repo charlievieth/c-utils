@@ -1,2 +1,5 @@
 *.o
 *.a
+compile_commands.json
+.cache
+*.dSYM
