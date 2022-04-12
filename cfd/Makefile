@@ -2,8 +2,10 @@
 # CC=fake-gcc
 # Debug (-g creates the *.dSYM directory)
 
+# TODO: build with -DNDEBUG
+
 # CFLAGS=-O2 -std=c11 -g -flto
-CFLAGS=-O3 -flto -std=gnu11 -mtune=native
+CFLAGS=-O2 -std=c11 -mtune=native
 
 # Add -march=native for non-arm64 platforms
 UNAME_M := $(shell uname -m)
@@ -65,9 +67,22 @@ all: clean build
 address: CFLAGS+=-fsanitize=address
 address: build
 
+.PHONY: undefined
+undefined: CFLAGS+=-fsanitize=undefined
+undefined: build
+
 .PHONY: race
 race: CFLAGS+=-fsanitize=thread
 race: build
+
+.PHONY: profile
+profile: CFLAGS+=-g
+profile: CFLAGS+=-DNDEBUG
+profile: build
+
+.PHONY: release
+release: CFLAGS+=-DNDEBUG
+release: build
 
 # build the binary (we do this so that we generate debug symbols)
 cfd:
@@ -89,14 +104,14 @@ debug: run clean
 run: clean build
 	./$(OUT)
 
+.PHONY: test
+test:
+	@./scripts/test.bash
+
+.PHONY: bench
+bench:
+	@./scripts/bench.bash
+
 .PHONY: clean
 clean:
 	$(RM) *.o *.dSYM $(OUT)
-
-.PHONY: compile-commands
-compile-commands:
-	bear fake-gcc $(LDFLAGS) $(CFLAGS) -o $(OUT) cfd.c
-
-.PHONY: test_request
-test_request:
-	@./cfd --session=46 --status-code=1 -- 1234 test -v cfd request
