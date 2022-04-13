@@ -4,13 +4,18 @@
 
 # TODO: build with -DNDEBUG
 
-# CFLAGS=-O2 -std=c11 -g -flto
-CFLAGS=-O2 -std=c11 -mtune=native
+CFLAGS=-O2 -g -std=c11 -mtune=native
 
 # Add -march=native for non-arm64 platforms
 UNAME_M := $(shell uname -m)
 ifneq ($(UNAME_M),arm64)
 	CFLAGS+=-march=native
+endif
+
+# Support glibc
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+	CFLAGS+=-D_GNU_SOURCE
 endif
 
 #
@@ -76,7 +81,6 @@ race: CFLAGS+=-fsanitize=thread
 race: build
 
 .PHONY: profile
-profile: CFLAGS+=-g
 profile: CFLAGS+=-DNDEBUG
 profile: build
 
