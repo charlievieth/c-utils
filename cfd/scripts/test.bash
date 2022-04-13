@@ -61,7 +61,7 @@ ls -la | "${CFD}" >/dev/null
 
 # testdata/fd_sort
 
-FD_TEST="$(cd ./testdata/fd_test && fd --color always | sort --random-sort)"
+FD_TEST="$(cd ./testdata/fd_test && fd --color always | LC_ALL=C sort --random-sort)"
 
 _test 'sort'
 diff ./testdata/fd_test/want_sort.out <(echo "${FD_TEST}" | "${CFD}" --sort)
