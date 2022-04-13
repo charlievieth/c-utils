@@ -171,17 +171,19 @@ typedef struct {
 #define UNIQUE_ALIAS(name) CONCAT(name, __COUNTER__)
 
 #define _line_buffer_for_each(lbuf, len, value, __p, __e)               \
-	line_buffer *(__p) = (lbuf);                                        \
 	line_buffer *(__e) = &(lbuf)[(len)];                                \
-	for ((value) = (__p); (__p) < (__e); (value) = (++__p))
+	for ((value) = (lbuf); (value) < (__e); (value)++)
 
 #define line_buffer_for_each(lbuf, len, value)                          \
 		_line_buffer_for_each(lbuf, len, value, UNIQUE_ALIAS(__p), UNIQUE_ALIAS(__e))
 
+#define for_each_if(condition) if (!(condition)) {} else
+
 #define _line_bufferp_for_each(pbuf, plen, value, __p, __e)             \
 	line_buffer **(__p) = (pbuf);                                       \
 	line_buffer *const *(__e) = &(pbuf)[(plen)];                        \
-	for ((value) = *(__p); (__p) < (__e); (value) = *(++__p))
+	while ((__p) < (__e))                                               \
+		for_each_if((value = *(__p++)) || true)
 
 #define line_bufferp_for_each(pbuf, plen, value)                        \
 		_line_bufferp_for_each(pbuf, plen, value, UNIQUE_ALIAS(__p), UNIQUE_ALIAS(__e))
