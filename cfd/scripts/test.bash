@@ -6,6 +6,9 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/.."
 PYISORT="${DIR}/testdata/pyisort.py"
 
+# Source LS_COLORS since the tests rely on them:
+. "${DIR}/testdata/ls_colors"
+
 if [ -t 1 ]; then
     RED=$'\E[00;31m'
     GREEN=$'\E[00;32m'
