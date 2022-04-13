@@ -95,12 +95,12 @@ if command -v go >/dev/null && [[ -d "$(go env GOROOT)" ]]; then
 
     _test 'GOROOT: sort (comp)'
     diff "${DIFF_FLAGS[@]}" \
-        <(sed 's/^\.\///g' "${ALL_GO}" | sort --buffer-size=64M) \
+        <(sed 's/^\.\///g' "${ALL_GO}" | "${PYISORT}") \
         <(cat "${ALL_GO}" | ${CFD} --sort)
 
     _test 'GOROOT: isort (comp)'
     diff "${DIFF_FLAGS[@]}" \
-        <(sed 's/^\.\///g' "${ALL_GO}" | "${PYISORT}") \
+        <(sed 's/^\.\///g' "${ALL_GO}" | "${PYISORT}" --ignore-case) \
         <(cat "${ALL_GO}" | "${CFD}" --isort)
 fi
 
