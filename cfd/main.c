@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <time.h>
 
 // TODO: consider using: getprogname()
 #define PROGRAM_NAME "cfd"
@@ -319,6 +320,7 @@ static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char
 	}
 
 	plines = line_buffer_to_ptr(lines, li);
+	// NB: I tried using an inlined version of glibc's qsort but this is faster.
 	qsort(plines, li, sizeof(line_buffer *), line_buffer_compare_strings);
 
 	line_buffer *p;
@@ -407,6 +409,12 @@ static inline bool streq(const char *s1, const char *s2) {
 
 static inline bool arg_equal(const char *argv, const char *short_name, const char *long_name) {
 	return (short_name && streq(argv, short_name)) || (long_name && streq(argv, long_name));
+}
+
+static int64_t timespec_nanos(struct timespec ts) {
+	int64_t sec = ts.tv_sec;
+	int64_t nsec = ts.tv_nsec;
+	return (sec * 1e9) + nsec;
 }
 
 // static ssize_t trim_prefix(char **dst, size_t *dst_cap, const char *buf, const size_t buf_len) {
@@ -501,18 +509,38 @@ int main(int argc, char const *argv[]) {
 	const unsigned char delim = null_terminate ? 0 : '\n';
 
 	if (run_benchmarks) {
-		fprintf(stderr, "benchmark: n: %li file: %s\n", bench_count, bench_filename);
 		FILE *istream = fopen(bench_filename, "r");
 		if (!istream) {
 			perror("fopen (bench file)");
 			return 1;
 		}
+
+		// Get file size
+		if (fseek(istream, 0, SEEK_END) != 0) {
+			perror("fseek (bench file)");
+			fclose(istream);
+			return 1;
+		}
+		const int64_t file_bytes = ftello(istream);
+		if (fseek(istream, 0, SEEK_SET) != 0) {
+			perror("fseek (bench file)");
+			fclose(istream);
+			return 1;
+		}
+		const double file_mbs = (double)file_bytes / (double)(1024 * 1024);
+		fprintf(stderr, "benchmark: n: %li file: %s size: %.2f\n",
+				bench_count, bench_filename, file_mbs);
+
+		struct timespec start;
+		timespec_get(&start, TIME_UTC);
+
 		FILE *ostream = fopen("/dev/null", "w");
 		if (!ostream) {
 			perror("fopen (/dev/null)");
 			fclose(istream);
 			return 1;
 		}
+
 		int exit_code = 0;
 		if (sort_lines || sort_lines_case) {
 			for (long i = 0; i < bench_count; i++) {
@@ -539,6 +567,16 @@ int main(int argc, char const *argv[]) {
 				}
 			}
 		}
+
+		struct timespec end;
+		timespec_get(&end, TIME_UTC);
+
+		// ns and secs are total
+		int64_t ns = timespec_nanos(end) - timespec_nanos(start);
+		double secs = (double)(ns / 1e9);
+		fprintf(stderr, "duration:   %.3fs\n", secs);
+		fprintf(stderr, "average:    %.3fs\n", secs/(double)bench_count);
+		fprintf(stderr, "throughput: %.3f MB/s\n", (1 / secs) * (file_mbs * (double)bench_count));
 
 bench_exit:
 		if (istream) {
