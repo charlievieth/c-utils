@@ -29,6 +29,10 @@ function _test() {
     echo -e "${GREEN}# test:${RESET}" "$1"
 }
 
+function _fail() {
+    echo -e "${YELLOW}error:${RESET}" "$@"
+}
+
 function _error() {
     echo -e "${YELLOW}error:${RESET}" "$@"
     return 1
@@ -41,7 +45,11 @@ function _error() {
 _test 'build'
 make address
 
-CFD="${DIR}/cfd"
+if command -v realpath >/dev/null; then
+    CFD="$(realpath "${DIR}/cfd")"
+else
+    CFD="${DIR}/cfd"
+fi
 [[ ! -x "${CFD}" ]] && {
     _error "missing cfd executable: ${CFD}"
 }
@@ -67,10 +75,10 @@ ls -la | "${CFD}" >/dev/null
 FD_TEST="$(cd ./testdata/fd_test && fd --color always | LC_ALL=C sort --random-sort)"
 
 _test 'sort'
-diff ./testdata/fd_test/want_sort.out <(echo "${FD_TEST}" | "${CFD}" --sort)
+diff ./testdata/fd_test/want_sort.out <(echo "${FD_TEST}" | "${CFD}" --sort) || _fail "failed: $TESTNAME"
 
 _test 'isort'
-diff ./testdata/fd_test/want_isort.out <(echo "${FD_TEST}" | "${CFD}" --isort)
+diff ./testdata/fd_test/want_isort.out <(echo "${FD_TEST}" | "${CFD}" --isort) || _fail "failed: $TESTNAME"
 
 # GOROOT
 
