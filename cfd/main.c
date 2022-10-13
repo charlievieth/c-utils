@@ -18,11 +18,11 @@
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #endif
 
-static void __attribute__((__noreturn__)) *xalloc_die();
+static void __attribute__((__noreturn__)) *xalloc_die(void);
 static void __attribute__((__malloc__)) *xmalloc(size_t n);
 static void __attribute__((__malloc__)) *xrealloc(void *p, size_t n);
 
-static void *xalloc_die() {
+static void *xalloc_die(void) {
 	fflush(stdout);
 	fprintf(stderr, "memory exhausted\n");
 	abort();
@@ -509,60 +509,59 @@ int main(int argc, char const *argv[]) {
 	const unsigned char delim = null_terminate ? 0 : '\n';
 
 	if (run_benchmarks) {
+		struct timespec start;
+		FILE *ostream = NULL;
+		int exit_code = 1;
+
 		FILE *istream = fopen(bench_filename, "r");
 		if (!istream) {
 			perror("fopen (bench file)");
-			return 1;
+			goto bench_exit;
 		}
 
 		// Get file size
 		if (fseek(istream, 0, SEEK_END) != 0) {
 			perror("fseek (bench file)");
-			fclose(istream);
-			return 1;
+			goto bench_exit;
 		}
 		const int64_t file_bytes = ftello(istream);
 		if (fseek(istream, 0, SEEK_SET) != 0) {
 			perror("fseek (bench file)");
-			fclose(istream);
-			return 1;
+			goto bench_exit;
 		}
 		const double file_mbs = (double)file_bytes / (double)(1024 * 1024);
 		fprintf(stderr, "benchmark: n: %li file: %s size: %.2f\n",
 				bench_count, bench_filename, file_mbs);
 
-		struct timespec start;
 		timespec_get(&start, TIME_UTC);
 
-		FILE *ostream = fopen("/dev/null", "w");
+		ostream = fopen("/dev/null", "w");
 		if (!ostream) {
 			perror("fopen (/dev/null)");
-			fclose(istream);
-			return 1;
+			goto bench_exit;
 		}
 
-		int exit_code = 0;
 		if (sort_lines || sort_lines_case) {
 			for (long i = 0; i < bench_count; i++) {
-				exit_code = consume_stream_sort(istream, ostream, delim, sort_lines_case);
-				if (unlikely(exit_code != 0)) {
+				int ret = consume_stream_sort(istream, ostream, delim, sort_lines_case);
+				if (unlikely(ret != 0)) {
+					fprintf(stderr, "consume_stream_sort\n");
 					goto bench_exit;
 				}
 				if (unlikely(fseek(istream, 0, SEEK_SET) != 0)) {
 					perror("fseek");
-					exit_code = 1;
 					goto bench_exit;
 				}
 			}
 		} else {
 			for (long i = 0; i < bench_count; i++) {
-				exit_code = consume_stream(istream, ostream, delim);
-				if (unlikely(exit_code != 0)) {
+				int ret = consume_stream(istream, ostream, delim);
+				if (unlikely(ret != 0)) {
+					fprintf(stderr, "consume_stream\n");
 					goto bench_exit;
 				}
 				if (unlikely(fseek(istream, 0, SEEK_SET) != 0)) {
 					perror("fseek");
-					exit_code = 1;
 					goto bench_exit;
 				}
 			}
@@ -577,6 +576,7 @@ int main(int argc, char const *argv[]) {
 		fprintf(stderr, "duration:   %.3fs\n", secs);
 		fprintf(stderr, "average:    %.3fs\n", secs/(double)bench_count);
 		fprintf(stderr, "throughput: %.3f MB/s\n", (1 / secs) * (file_mbs * (double)bench_count));
+		exit_code = 0;
 
 bench_exit:
 		if (istream) {
