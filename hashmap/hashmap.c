@@ -6,9 +6,6 @@
 #include <stddef.h>
 #include <assert.h>
 
-// WARN: dev only
-#include <malloc/malloc.h>
-
 #include "xxhash.h"
 #include "utils.h"
 #include "hedley.h"
@@ -41,13 +38,43 @@ typedef struct string_t {
 	char   *str;
 } string_t;
 
-static inline bool memequal(const void *p1, const void *p2, size_t size) {
-	return p1 == p2 || memcmp(p1, p2, size) == 0;
+static inline bool memcmp_small(const void *p1, const void *p2, size_t n) {
+	const unsigned char *s1 = (const unsigned char *)p1;
+	const unsigned char *s2 = (const unsigned char *)p2;
+	for (size_t i = 0; i < n; i++) {
+		if (*s1++ != *s2++) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static inline bool memequal(const void *p1, const void *p2, size_t n) {
+#ifdef __clang__
+	static const size_t small_cutoff = 8;
+#else
+	static const size_t small_cutoff = 16;
+#endif
+	if (p1 == p2) {
+		return true;
+	}
+	// Both clang and GCC unroll memcmp_small when n <= 16.
+	if (n <= small_cutoff) {
+		return memcmp_small(p1, p2, n);
+	}
+	return memcmp(p1, p2, n) == 0;
 }
 
 static inline bool string_equal(const string_t *s, const char *str, size_t len) {
 	// TODO: use our own memequal for short strings
-	return s->len == len && *s->str == *str && memequal(s->str, str, len);
+	return s->len == len && s->str[0] == str[0] && memequal(s->str, str, len);
+}
+
+HEDLEY_NON_NULL(1, 2)
+static inline void string_move(string_t *dst, string_t *src) {
+	*dst = *src;
+	src->len = 0;
+	src->str = NULL;
 }
 
 HEDLEY_NON_NULL(1, 2)
@@ -62,13 +89,7 @@ static void string_assign(string_t *key, const char *str, size_t len) {
 	key->len = len;
 }
 
-HEDLEY_NON_NULL(1, 2)
-static void string_move(string_t *dst, string_t *src) {
-	*dst = *src;
-	src->len = 0;
-	src->str = NULL;
-}
-
+// TODO: allow the hmap to *not* own the string.
 static void string_free(string_t *s) {
 	if (s && s->str) {
 		free(s->str);
@@ -119,9 +140,13 @@ void print_bucket(const bmap *buckets, int nbuckets);
 //
 ////////////////////////////////////////////////////////////////////////////////
 
+static uint32_t hmap_new_seed(void) {
+	return random()&UINT32_MAX;
+}
+
 HEDLEY_RETURNS_NON_NULL
 static hmap *hmap_new(free_fn free) {
-	uint32_t seed = random() & UINT32_MAX;
+	uint32_t seed = hmap_new_seed();
 	hmap *h = xmalloc(sizeof(hmap));
 	*h = (hmap){ .hash0 = seed, .free = free };
 	return h;
@@ -396,6 +421,11 @@ static inline void bmap_clear(bmap *b) {
 #endif
 }
 
+HEDLEY_NON_NULL(1, 2)
+static inline uint64_t hmap_hash_str(const hmap *h, const char *s, size_t n) {
+	return XXH64((const void*)s, n, (XXH64_hash_t)h->hash0);
+}
+
 typedef struct {
 	bmap       *b; // current destination bucket
 	size_t     i;  // key/elem index into b
@@ -439,7 +469,7 @@ static void hmap_evacuate(hmap *h, size_t oldbucket) {
 				uint8_t use_y = 0;
 				string_t *k = &b->keys[i];
 				if (!hmap_same_size_grow(h)) {
-					uint64_t hash = XXH64(k->str, k->len, (XXH64_hash_t)h->hash0);
+					uint64_t hash = hmap_hash_str(h, k->str, k->len);
 					if ((hash&newbit) != 0) {
 						use_y = 1;
 					}
@@ -497,12 +527,12 @@ static void hmap_grow_work(hmap *h, size_t bucket) {
 }
 
 HEDLEY_NON_NULL(1, 2)
-int hmap_assign_str(hmap *h, const char *str, void *value) {
+void hmap_assign_str(hmap *h, const char *str, void *value) {
 	assert(h);
 	assert(str);
 
 	size_t len = strlen(str);
-	uint64_t hash = XXH64(str, len, (XXH64_hash_t)h->hash0);
+	uint64_t hash = hmap_hash_str(h, str, len);
 
 	if (h->buckets == NULL) {
 		h->buckets = xcalloc(1, sizeof(bmap));
@@ -585,7 +615,199 @@ exit_bucketloop:
 done:
 	hmap_free_value(h, &insertb->values[inserti]);
 	insertb->values[inserti].ptr = value;
-	return 0;
+}
+
+static inline void hmap_set_value(void **dst, bmap_entry *e) {
+	if (dst) {
+		*dst = !!(e != NULL) ? e->ptr : NULL;
+	}
+}
+
+static inline void hmap_not_found(void **dst) {
+	hmap_set_value(dst, NULL);
+}
+
+static HEDLEY_ALWAYS_INLINE bool hmap_access_strlen_impl(
+	const hmap *h,
+	const char *str,
+	const size_t len,
+	void **value
+) {
+	if (h == NULL || str == NULL) {
+		hmap_not_found(value);
+		return false;
+	}
+	if (h->b == 0) {
+		// One bucket table
+		bmap *b = &h->buckets[0];
+		if (len < 32) {
+			for (int i = 0; i < BUCKET_CNT; i++) {
+				const string_t *k = &b->keys[i];
+				if (k->len != len || tophash_is_empty(b->tophash[i])) {
+					if (b->tophash[i] == EMPTY_REST) {
+						break;
+					}
+					continue;
+				}
+				if (string_equal(k, str, len)) {
+					hmap_set_value(value, &b->values[i]);
+					return true;
+				}
+			}
+			hmap_not_found(value);
+			return false;
+		}
+		// long key, try not to do more comparisons than necessary
+		size_t keymaybe = BUCKET_CNT;
+		for (int i = 0; i < BUCKET_CNT; i++) {
+			const string_t *k = &b->keys[i];
+			if (k->len != len || tophash_is_empty(b->tophash[i])) {
+				if (b->tophash[i] == EMPTY_REST) {
+					break;
+				}
+				continue;
+			}
+			// check first 4 bytes
+			if (memcmp(k->str, str, 4) != 0) {
+				continue;
+			}
+			// check last 4 bytes
+			if (memcmp(&k->str[len-4], &str[len-4], 4) != 0) {
+				continue;
+			}
+			if (keymaybe != BUCKET_CNT) {
+				// Two keys are potential matches. Use hash to distinguish them.
+				goto dohash;
+			}
+		}
+		if (keymaybe != BUCKET_CNT) {
+			const string_t *k = &b->keys[keymaybe];
+			if (string_equal(k, str, len)) {
+				hmap_set_value(value, &b->values[keymaybe]);
+				return true;
+			}
+		}
+		hmap_not_found(value);
+		return false;
+	}
+
+	uint64_t hash;
+	size_t m;
+	uint8_t top;
+	bmap *b;
+dohash:
+	hash = hmap_hash_str(h, str, len);
+	m = hmap_bucket_mask(h->b);
+	b = &h->buckets[hash&m];
+	if (h->oldbuckets != NULL) {
+		if (!hmap_same_size_grow(h)) {
+			m >>= 1;
+		}
+		bmap *oldb = &h->buckets[hash&m];
+		if (!bmap_evacuated(oldb)) {
+			b = oldb;
+		}
+	}
+	top = tophash(hash);
+	for (; b != NULL; b = b->overflow) {
+		for (int i = 0; i < BUCKET_CNT; i++) {
+			const string_t *k = &b->keys[i];
+			if (k->len != len || b->tophash[i] != top) {
+				continue;
+			}
+			if (string_equal(k, str, len)) {
+				hmap_set_value(value, &b->values[i]);
+				return true;
+			}
+		}
+	}
+
+	hmap_not_found(value);
+	return false;
+}
+
+bool hmap_access_strlen(hmap *h, const char *str, size_t len, void **value) {
+	return hmap_access_strlen_impl(h, str, len, value);
+}
+
+bool hmap_access_str(hmap *h, const char *str, void **value) {
+	size_t len = (str != NULL) ? strlen(str) : 0;
+	return hmap_access_strlen_impl(h, str, len, value);
+}
+
+bool hmap_delete_strlen(hmap *h, const char *str, size_t len) {
+	if (h == NULL || str == NULL) {
+		return false;
+	}
+	uint64_t hash = hmap_hash_str(h, str, len);
+
+	size_t bucket = hash & hmap_bucket_mask(h->b);
+	if (hmap_growing(h)) {
+		// WARN WARN WARN
+		hmap_grow_work(h, bucket);
+	}
+	bmap *b = &h->buckets[bucket];
+	bmap *b_orig = b;
+	uint8_t top = tophash(hash);
+	string_t *k;
+	for (; b != NULL; b = b->overflow) {
+		for (int i = 0; i < BUCKET_CNT; i++) {
+			k = &b->keys[i];
+			if (k->len != len || b->tophash[i] != top) {
+				continue;
+			}
+			if (!string_equal(k, str, len)) {
+				continue;
+			}
+			string_free(k);
+			hmap_free_value(h, &b->values[i]);
+			b->tophash[i] = EMPTY_ONE;
+			// If the bucket now ends in a bunch of emptyOne states,
+			// change those to emptyRest states.
+			if (i == BUCKET_CNT-1) {
+				if (b->overflow != NULL && b->overflow->tophash[0] != EMPTY_REST) {
+					goto notlast;
+				}
+			} else {
+				if (b->tophash[i+1] != EMPTY_REST) {
+					goto notlast;
+				}
+			}
+			for (;;) {
+				b->tophash[i] = EMPTY_REST;
+				if (i == 0) {
+					if (b == b_orig) {
+						break; // beginning of initial bucket, we're done.
+					}
+					// Find previous bucket, continue at its last entry.
+					bmap *c = b;
+					for (b = b_orig; b->overflow != c; b = b->overflow) {
+					}
+					i = BUCKET_CNT - 1;
+				} else {
+					i--;
+				}
+				if (b->tophash[i] != EMPTY_ONE) {
+					break;
+				}
+			}
+		notlast:
+			h->count--;
+			// Reset the hash seed to make it more difficult for attackers to
+			// repeatedly trigger hash collisions. See issue 25237.
+			if (h->count == 0) {
+				h->hash0 = hmap_new_seed();
+			}
+			goto search_end;
+		}
+	}
+search_end:
+	return false;
+}
+
+bool hmap_delete_str(hmap *h, const char *str) {
+	size_t len = (str != NULL) ? strlen(str) : 0;
+	return hmap_delete_strlen(h, str, len);
 }
 
 static const char *words[] = {
@@ -674,6 +896,10 @@ int main(int argc, char const *argv[]) {
 		hmap_assign_str(h, words[i], p);
 	}
 
+	for (int i = 0; i < 7; i++) {
+		hmap_delete_str(h, words[i]);
+	}
+
 	printf("b: %i\n", (int)h->b);
 	printf("shift: %zu\n", hmap_bucket_shift(h->b));
 	printf("count: %zu\n", h->count);
@@ -685,6 +911,21 @@ int main(int argc, char const *argv[]) {
 
 	printf("# old buckets:\n");
 	print_bucket(h->oldbuckets, hmap_noldbuckets(h));
+
+	int n = 0;
+	for (int i = 0; i < words_len; i++) {
+		int *p = malloc(sizeof(int));
+		*p = -1;
+		const char *w = words[i];
+		bool ok = hmap_access_str(h, w, (void *)&p);
+		if (ok) {
+			n++;
+			printf("%d: %s: %s = %d\n", i, w, ok ? "true" : "false", *p);
+		} else {
+			printf("%d: %s: %s = %s\n", i, w, ok ? "true" : "false", "(null)");
+		}
+	}
+	printf("found: %d\n", n);
 
 	hmap_destroy(h);
 

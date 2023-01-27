@@ -1,7 +1,7 @@
 # CC=gcc-11
 # Debug (-g creates the *.dSYM directory)
 #
-CFLAGS=-Os -std=gnu11
+CFLAGS=-Os -std=gnu11 -g
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 #
@@ -47,7 +47,7 @@ CFLAGS+=-Wnull-dereference
 # CFLAGS+=-fstack-protector-strong -fstack-check -fstack-protector
 #
 OUT=hashmap
-RM=rm -rfv
+RM=rm -rf
 
 .PHONY: all
 all: build
