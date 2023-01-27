@@ -1,5 +1,7 @@
 *.dSYM
 *.o
+*.yml
+*.yaml
 .cache
 /compile_commands.json
 /hashmap
