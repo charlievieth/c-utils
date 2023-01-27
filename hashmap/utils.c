@@ -41,3 +41,9 @@ void *xrealloc(void *ptr, size_t size) {
 	}
 	return p;
 }
+
+void xdie_impl(const char *msg, const char *file, int line) {
+	fprintf(stderr, "%s:%i %s\n", file, line, msg);
+	exit(1);
+	HEDLEY_UNREACHABLE();
+}
