@@ -1,7 +1,7 @@
 # CC=gcc-11
 # Debug (-g creates the *.dSYM directory)
 #
-CFLAGS=-Os -std=gnu11 -g
+CFLAGS=-O2 -std=c11 -flto -mtune=native -g
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 #
@@ -62,18 +62,28 @@ race: build
 
 # build the binary (we do this so that we generate debug symbols)
 hashmap: hashmap.c utils.c utils.h xxhash.c xxhash.h
-	@$(CC) $(LDFLAGS) $(CFLAGS) -o $(OUT) xxhash.c hashmap.c utils.c
+	$(CC) $(LDFLAGS) $(CFLAGS) -o $(OUT) xxhash.c hashmap.c utils.c
 
+# build: CFLAGS+=-DNDEBUG
 .PHONY: build
 build: hashmap
 
 .PHONY: debug
-debug: CFLAGS+=-DDEBUG -fsanitize=thread
+debug: CFLAGS+=-fsanitize=address
 debug: run clean
 
 .PHONY: run
 run: clean build
 	./$(OUT)
+
+.PHONE: debug_optimizations
+debug_optimizations: CFLAGS+=-fsave-optimization-record -foptimization-record-file=optimizations.yaml
+debug_optimizations: clean
+debug_optimizations: build
+
+.PHONY: lint
+lint:
+	clang-tidy hashmap.c utils.c utils.h
 
 .PHONY: clean
 clean:
