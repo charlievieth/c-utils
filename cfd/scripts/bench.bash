@@ -26,7 +26,8 @@ function _bench() {
 
 trap 'echo -e "${RED}# test:${RESET} ${YELLOW}${TESTNAME}${RESET} failed"' ERR
 
-make profile
+make clean
+make release
 
 if command -v realpath >/dev/null; then
     CFD="$(realpath "${DIR}/cfd")"

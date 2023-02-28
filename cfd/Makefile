@@ -68,6 +68,13 @@ RM=rm -rfv
 .PHONY: all
 all: clean build
 
+# build the binary (we do this so that we generate debug symbols)
+$(OUT): main.c
+	@$(CC) $(LDFLAGS) $(CFLAGS) -o $(OUT) main.c
+
+.PHONY: build
+build: $(OUT)
+
 .PHONY: address
 address: CFLAGS+=-fsanitize=address
 address: build
@@ -80,25 +87,9 @@ undefined: build
 race: CFLAGS+=-fsanitize=thread
 race: build
 
-.PHONY: profile
-profile: CFLAGS+=-DNDEBUG
-profile: build
-
 .PHONY: release
 release: CFLAGS+=-DNDEBUG
 release: build
-
-# build the binary (we do this so that we generate debug symbols)
-cfd:
-	@$(CC) $(LDFLAGS) $(CFLAGS) -o $(OUT) main.c
-
-# Note:
-#   $(RM) *.o forces rebuild
-#   $(RM) $(OUT).o forces rebuild of target
-#
-# @$(RM) $(OUT).o
-.PHONY: build
-build: clean cfd
 
 .PHONY: debug
 debug: CFLAGS+=-DDEBUG -fsanitize=thread
