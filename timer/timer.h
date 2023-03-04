@@ -1,8 +1,9 @@
 #ifndef TIMER_H
 #define TIMER_H
 
-// WARN: DEBUG ONLY
-#include <stdio.h>
+#if !defined(NS_OMIT_FPRINTF)
+#    include <stdio.h>
+#endif
 
 #include <stdint.h>
 #include <inttypes.h>
@@ -64,9 +65,12 @@ ns_time_t ns_time_now(void) {
 	return (ns_time_t){ns};
 }
 
+static inline ns_duration_t ns_time_sub(ns_time_t t1, ns_time_t t2) {
+	return (ns_duration_t)ns_clock_nanoseconds(t1) - (ns_duration_t)ns_clock_nanoseconds(t2);
+}
+
 static inline ns_duration_t ns_time_since(ns_time_t t) {
-	int64_t end = ns_clock_nanoseconds(ns_time_now());
-	return (ns_duration_t){end - (int64_t)ns_clock_nanoseconds(t)};
+	return ns_time_sub(ns_time_now(), t);
 }
 
 static inline int64_t ns_duration_ns(ns_duration_t d) {
@@ -157,9 +161,11 @@ ns_benchmark_t ns_benchmark(ns_duration_t exp, int (*fn)(long, void*), void *dat
 	#undef max
 }
 
-void fprintf_benchmark(FILE *restrict out, const char *name, ns_benchmark_t b) {
-	fprintf(out, "%s        %+"PRId32"        %+"PRId64" ns/op\n", name, b.nops, b.ns_per_op);
+#if !defined(NS_OMIT_FPRINTF)
+void ns_fprintf_benchmark(FILE *restrict out, const char *name, ns_benchmark_t b) {
+	fprintf(out, "%s        %"PRId32"        %"PRId64" ns/op\n", name, b.nops, b.ns_per_op);
 }
+#endif
 
 #if defined(HAVE_MACH_TIME)
 #    undef HAVE_MACH_TIME

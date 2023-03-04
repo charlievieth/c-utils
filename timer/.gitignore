@@ -1,0 +1,4 @@
+timer_test
+compile_commands.json
+*.dSYM
+*.plist
