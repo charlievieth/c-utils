@@ -60,9 +60,13 @@ address: build
 race: CFLAGS+=-fsanitize=thread
 race: build
 
+.PHONY: leak
+leak: CFLAGS+=-fsanitize=leak
+leak: build
+
 # build the binary (we do this so that we generate debug symbols)
 hashmap: hashmap.c utils.c utils.h xxhash.c xxhash.h
-	$(CC) $(LDFLAGS) $(CFLAGS) -o $(OUT) xxhash.c hashmap.c utils.c
+	$(CC) $(LDFLAGS) $(CFLAGS) -o $(OUT) hashmap.c utils.c
 
 # build: CFLAGS+=-DNDEBUG
 .PHONY: build
@@ -73,7 +77,7 @@ debug: CFLAGS+=-fsanitize=address
 debug: run clean
 
 .PHONY: run
-run: clean build
+run: clean address
 	./$(OUT)
 
 .PHONE: debug_optimizations
