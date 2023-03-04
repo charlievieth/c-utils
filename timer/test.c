@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE 1
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
