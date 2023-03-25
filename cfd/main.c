@@ -497,13 +497,10 @@ int main(int argc, char const *argv[]) {
 
 		#undef format_bool
 	}
-	if (invalid_flag) {
-		print_usage(true);
-		return 2;
-	}
-	if (print_help) {
-		print_usage(false);
-		return 0;
+	if (invalid_flag || print_help) {
+		free(bench_filename);
+		print_usage(invalid_flag); // print to stderr if there is an invalid flag
+		return invalid_flag ? 2 : 0;
 	}
 
 	const unsigned char delim = null_terminate ? 0 : '\n';
