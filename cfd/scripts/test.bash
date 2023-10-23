@@ -7,6 +7,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/.."
 PYISORT="${DIR}/testdata/pyisort.py"
 
 # Source LS_COLORS since the tests rely on them:
+# shellcheck source=../testdata/ls_colors
 . "${DIR}/testdata/ls_colors"
 
 if [ -t 1 ]; then
@@ -42,6 +43,10 @@ function _error() {
     _error "missing pyisort.py: ${PYISORT}"
 }
 
+if ! command -v fd >/dev/null; then
+    _error 'missing required command: fd'
+fi
+
 _test 'build'
 make address
 
@@ -54,31 +59,35 @@ fi
     _error "missing cfd executable: ${CFD}"
 }
 
+# shellcheck disable=SC2016
 _test '`fd -uu`'
 fd -uu | "${CFD}" >/dev/null
 
+# shellcheck disable=SC2016
 _test '`fd --absolute-path`'
 fd --absolute-path | "${CFD}" >/dev/null
 
+# shellcheck disable=SC2016
 _test '`fd -uu --color always`'
 fd -uu --color always | "${CFD}" >/dev/null
 
+# shellcheck disable=SC2016
 _test '`fd --color always --absolute-path`'
 fd --color always --absolute-path | "${CFD}" >/dev/null
 
+# shellcheck disable=SC2016
 _test '`ls -la`'
 ls -la | "${CFD}" >/dev/null
 
-
 # testdata/fd_sort
 
-FD_TEST="$(cd ./testdata/fd_test && fd --color always | LC_ALL=C sort --random-sort)"
+FD_TEST="$(cd "${DIR}/testdata/fd_test" && fd --color always | LC_ALL=C sort --random-sort)"
 
 _test 'sort'
-diff ./testdata/fd_test/want_sort.out <(echo "${FD_TEST}" | "${CFD}" --sort) || _fail "failed: $TESTNAME"
+diff "${DIR}/testdata/fd_test/want_sort.out" <(echo "${FD_TEST}" | "${CFD}" --sort) || _fail "failed: ${TESTNAME}"
 
 _test 'isort'
-diff ./testdata/fd_test/want_isort.out <(echo "${FD_TEST}" | "${CFD}" --isort) || _fail "failed: $TESTNAME"
+diff "${DIR}/testdata/fd_test/want_isort.out" <(echo "${FD_TEST}" | "${CFD}" --isort) || _fail "failed: ${TESTNAME}"
 
 # GOROOT
 
@@ -102,17 +111,17 @@ if command -v go >/dev/null && [[ -d "$(go env GOROOT)" ]]; then
     _test 'GOROOT: no-sort (comp)'
     diff "${DIFF_FLAGS[@]}" \
         <(sed -E 's/\x1b\[.*\.\/\x1b\[0m|\.\///g' "${ALL_GO_COLOR}" | sort) \
-        <(cat "${ALL_GO_COLOR}" | "${CFD}" | sort)
+        <("${CFD}" <"${ALL_GO_COLOR}" | sort)
 
     _test 'GOROOT: sort (comp)'
     diff "${DIFF_FLAGS[@]}" \
         <(sed 's/^\.\///g' "${ALL_GO}" | "${PYISORT}") \
-        <(cat "${ALL_GO}" | ${CFD} --sort)
+        <(${CFD} --sort <"${ALL_GO}")
 
     _test 'GOROOT: isort (comp)'
     diff "${DIFF_FLAGS[@]}" \
         <(sed 's/^\.\///g' "${ALL_GO}" | "${PYISORT}" --ignore-case) \
-        <(cat "${ALL_GO}" | "${CFD}" --isort)
+        <("${CFD}" --isort <"${ALL_GO}")
 fi
 
 _test 'passed'
