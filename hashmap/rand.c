@@ -1,18 +1,23 @@
+// vim: ts=4 sw=4 et
+
 #include "rand.h"
 #include <assert.h>
 #include <stdint.h>
-#include <time.h>
-
-// WARN: dev only
-#ifndef HAVE_PTHREAD
-#define HAVE_PTHREAD
-#endif
-
-#ifdef HAVE_PTHREAD
+#include <unistd.h>     // getpid
+#include <sys/time.h>   // gettimeofday
+#include <sys/random.h> // getentropy
 #include <pthread.h>
-#endif
+
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t once = PTHREAD_ONCE_INIT;
+static rand_source global = RAND_SOURCE_INITIALIZER;
 
 #define rng_len 607
+
+#ifdef static_assert
+static_assert(sizeof(((rand_source *)0)->vec) / sizeof(int64_t) == rng_len,
+              "size of rng_cooked and rand_source->vec are not equal");
+#endif
 
 static const int64_t rng_cooked[rng_len] = {
 	-4181792142133755926LL, -4576982950128230565LL, 1395769623340756751LL,  5333664234075297259LL,
@@ -169,11 +174,6 @@ static const int64_t rng_cooked[rng_len] = {
 	8382142935188824023LL,  9103922860780351547LL,  4152330101494654406LL,
 };
 
-#ifdef static_assert
-static_assert(sizeof(((rand_source *)0)->vec) == sizeof(rng_cooked),
-              "size of rng_cooked and rand_source->vec are not equal");
-#endif
-
 static int32_t seedrand(int32_t x) {
 	static const int32_t A = 48271;
 	static const int32_t Q = 44488;
@@ -234,23 +234,15 @@ uint64_t rand_source_uint64(rand_source *rng) {
 }
 
 int64_t rand_source_int64(rand_source *rng) {
-	return (int64_t)(rand_source_uint64(rng) & INT64_MAX);
+	return rand_source_uint64(rng) & INT64_MAX;
 }
 
-static rand_source global = RAND_SOURCE_INITIALIZER;
-
-#ifdef HAVE_PTHREAD
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_once_t once = PTHREAD_ONCE_INIT;
-#  define do_locked(fn)           \
-	pthread_mutex_lock(&mutex);   \
-	fn;                           \
-	pthread_mutex_unlock(&mutex)
-#  define do_once(fn) pthread_once(&once, fn)
-#else
-#  define do_locked(fn) fn
-#  define do_once(fn)   fn()
-#endif /* HAVE_PTHREAD */
+#define do_locked(fn)                 \
+	do {                              \
+		pthread_mutex_lock(&mutex);   \
+		fn;                           \
+		pthread_mutex_unlock(&mutex); \
+	} while (0)
 
 void rand_seed(int64_t seed) {
 	do_locked(rand_source_seed(&global, seed));
@@ -268,14 +260,18 @@ int64_t rand_int64(void) {
 	return n;
 }
 
-static inline void do_init_rand_seed_once(void) {
-	uint64_t seed = 89482311;
-	seed ^= (uint64_t)time(NULL) * UINT64_C(0xe7037ed1a0b428db);
-	seed ^= (uint64_t)clock() * UINT64_C(0xe7037ed1a0b428db);
-	seed *= UINT64_C(0xa0761d6478bd642f);
+static void do_init_rand_seed_once(void) {
+	static const uint64_t m1 = UINT64_C(0xa0761d6478bd642f);
+	static const uint64_t m2 = UINT64_C(0xe7037ed1a0b428db);
+	uint64_t seed;
+	if (getentropy((void *)&seed, sizeof(uint64_t)) != 0) {
+		struct timeval tv;
+		gettimeofday(&tv, NULL);
+		seed = (getpid() << 16) ^ ((uint64_t)tv.tv_sec * m1) ^ (tv.tv_usec * m2);
+	}
 	rand_seed(seed);
 }
 
-void rand_seed_once(void) {
-	do_once(do_init_rand_seed_once);
+void rand_init_seed_once(void) {
+	pthread_once(&once, do_init_rand_seed_once);
 }

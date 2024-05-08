@@ -1,49 +1,53 @@
 #ifndef TIMER_H
 #define TIMER_H
 
-// WARN: DEBUG ONLY
-#include <stdio.h>
+#if !defined(NS_OMIT_FPRINTF)
+#    include <stdio.h>
+#endif
 
 #include <stdint.h>
-#include <time.h>
+#include <inttypes.h>
 #include <stdbool.h>
 
 #if defined(__APPLE__) && defined(__MACH__)
-#include <mach/mach_time.h>
-#define HAVE_MACH_TIME
+#    include <mach/mach_time.h>
+#    define HAVE_MACH_TIME
+#else
+#    include <time.h>
 #endif
-
-#define NANOSECOND  1L
-#define MICROSECOND (1000L * NANOSECOND)
-#define MILLISECOND (1000L * MICROSECOND)
-#define SECOND      (1000L * MILLISECOND)
-#define MINUTE      (60L * SECOND)
-#define HOUR        (60L * MINUTE)
 
 // ns_time_t represents an instant in time with nanosecond precision.
 typedef struct {
 	uint64_t ext; // monotonic clock reading in nanoseconds
 } ns_time_t;
 
-// TODO: we don't need a struct for this !!!
-//
 // A ns_duration_t represents the elapsed time between two instants
 // as an int64 nanosecond count. The representation limits the
 // largest representable duration to approximately 290 years.
-typedef struct {
-	int64_t ns;
-} ns_duration_t;
+typedef int64_t ns_duration_t;
 
+// Duration constants
+#define NS_NANOSECOND  (ns_duration_t)(1)
+#define NS_MICROSECOND (ns_duration_t)(1000 * NS_NANOSECOND)
+#define NS_MILLISECOND (ns_duration_t)(1000 * NS_MICROSECOND)
+#define NS_SECOND      (ns_duration_t)(1000 * NS_MILLISECOND)
+#define NS_MINUTE      (ns_duration_t)(60 * NS_SECOND)
+#define NS_HOUR        (ns_duration_t)(60 * NS_MINUTE)
+
+// A ns_benchmark_t is the result of benchmarking a function.
 typedef struct {
-	ns_duration_t d;
-	int32_t       n;
-	bool          failed;
+	ns_duration_t dur;       // benchmark duration
+	ns_duration_t ns_per_op; // nanoseconds per op
+	int32_t       nops;      // number of times the benchmark function was called
+	bool          failed;    // true if the benchmark return non-zero
 } ns_benchmark_t;
 
+// ns_clock_nanoseconds returns the monotonic clock reading in nanoseconds.
 static inline uint64_t ns_clock_nanoseconds(ns_time_t t) {
 	return t.ext;
 }
 
+// ns_time_now returns a ns_time_t that stores the current time.
 ns_time_t ns_time_now(void) {
 #if defined(HAVE_MACH_TIME)
 	static __thread mach_timebase_info_data_t tb_info;
@@ -56,22 +60,25 @@ ns_time_t ns_time_now(void) {
 	// TODO: check for _POSIX_TIMERS > 0 and _POSIX_MONOTONIC_CLOCK
 	struct timespec tp;
 	clock_gettime(CLOCK_MONOTONIC, &tp); // TODO: check error
-	uint64_t ns = (tp.tv_sec * SECOND) + tp.tv_nsec;
+	uint64_t ns = (tp.tv_sec * NS_SECOND) + tp.tv_nsec;
 #endif
 	return (ns_time_t){ns};
 }
 
-static inline ns_duration_t ns_time_since(ns_time_t t) {
-	int64_t end = ns_clock_nanoseconds(ns_time_now());
-	return (ns_duration_t){end - (int64_t)ns_clock_nanoseconds(t)};
+static inline ns_duration_t ns_time_sub(ns_time_t t1, ns_time_t t2) {
+	return (ns_duration_t)ns_clock_nanoseconds(t1) - (ns_duration_t)ns_clock_nanoseconds(t2);
 }
 
-static inline uint64_t ns_duration_ns(ns_duration_t d) {
-	return d.ns;
+static inline ns_duration_t ns_time_since(ns_time_t t) {
+	return ns_time_sub(ns_time_now(), t);
+}
+
+static inline int64_t ns_duration_ns(ns_duration_t d) {
+	return d;
 }
 
 double ns_duration_ms(ns_duration_t d) {
-	return (double)ns_duration_ns(d) / (double)MILLISECOND;
+	return (double)ns_duration_ns(d) / (double)NS_MILLISECOND;
 }
 
 ns_duration_t ns_time_func(int64_t iterations, void (*funcp)(void*), void *data) {
@@ -126,9 +133,9 @@ ns_benchmark_t ns_benchmark(ns_duration_t exp, int (*fn)(long, void*), void *dat
 	}
 	d = ns_time_since(t);
 
-	int32_t n, last = 1;
+	int32_t n = 1;
 	while (ns_duration_ns(d) < ns_duration_ns(exp)) {
- 		last = n;
+ 		int32_t last = n;
 		int64_t ns_per_op = ns_duration_ns(d) / n;
 		n = ns_duration_ns(exp) / ns_per_op;
 		n = max(min(n+n/5, last*100), last+1);
@@ -138,16 +145,30 @@ ns_benchmark_t ns_benchmark(ns_duration_t exp, int (*fn)(long, void*), void *dat
 		}
 		t = ns_time_now();
 		if (fn(n, data) != 0) {
-			return (ns_benchmark_t){ .n = n, .failed = true };
+			return (ns_benchmark_t){ .nops = n, .failed = true };
 		}
 		d = ns_time_since(t);
 	}
-	return (ns_benchmark_t){ .d = d, .n = n, .failed = false };
+
+	return (ns_benchmark_t){
+		.dur = d,
+		.ns_per_op = ns_duration_ns(d) / n,
+		.nops = n,
+		.failed = false
+	};
 
 	#undef min
 	#undef max
 }
 
-#undef HAVE_MACH_TIME
+#if !defined(NS_OMIT_FPRINTF)
+void ns_fprintf_benchmark(FILE *restrict out, const char *name, ns_benchmark_t b) {
+	fprintf(out, "%s        %"PRId32"        %"PRId64" ns/op\n", name, b.nops, b.ns_per_op);
+}
+#endif
+
+#if defined(HAVE_MACH_TIME)
+#    undef HAVE_MACH_TIME
+#endif
 #endif /* TIMER_H */
 

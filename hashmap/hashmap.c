@@ -21,6 +21,7 @@
 
 // WARN: dev only
 #include "timer.h"
+#include "hashmap.h"
 
 #define BUCKET_CNT_BITS 3
 #define BUCKET_CNT      (1 << BUCKET_CNT_BITS)
@@ -44,28 +45,16 @@ enum tophash_t {
 #define OLD_ITERATOR   2
 #define SAME_SIZE_GROW 8
 
-// TODO: rename to "string_t" or something
-typedef struct string_t {
-	size_t len;
-	char   *str;
-} string_t;
-
 static inline bool memcmp_small(const void *p1, const void *p2, size_t n) {
 	const unsigned char *s1 = (const unsigned char *)p1;
 	const unsigned char *s2 = (const unsigned char *)p2;
 	for (; n && *s1++ == *s2++; n--) {
 	}
 	return n == 0;
-	// for (size_t i = 0; i < n; i++) {
-	// 	if (*s1++ != *s2++) {
-	// 		return false;
-	// 	}
-	// }
-	// return true;
 }
 
-static inline bool memequal(const void *p1, const void *p2, size_t n) {
-	// TODO: tune this value.
+static inline bool memequal(const char *p1, const char *p2, size_t n) {
+	// TODO: tune this value on amd64.
 	// Both clang and GCC unroll memcmp_small when n <= 16.
 	static const size_t small_cutoff = 8;
 	if (p1 == p2) {
@@ -74,20 +63,18 @@ static inline bool memequal(const void *p1, const void *p2, size_t n) {
 	if (n <= small_cutoff) {
 		return memcmp_small(p1, p2, n);
 	}
-	return memcmp(p1, p2, n) == 0;
+	return memcmp(p1, p2, 8) == 0 && memcmp(&p1[8], &p2[8], n-8) == 0;
 }
 
+HEDLEY_NON_NULL(1, 2)
 static inline bool string_equal(const string_t *s, const char *str, size_t len) {
-	// TODO: use our own memequal for short strings
+	// NB: this is faster on macOS but needs to be tested on Linux with glibc
 	return s->len == len && s->str[0] == str[0] && memequal(s->str, str, len);
 }
 
 HEDLEY_NON_NULL(1, 2)
-static inline void string_move(string_t *dst, string_t *src) {
+static inline void string_move(string_t *dst, const string_t *src) {
 	*dst = *src;
-	// WARN: not doing this for now!
-	// src->len = 0;
-	// src->str = NULL;
 }
 
 HEDLEY_NON_NULL(1, 2)
@@ -95,6 +82,10 @@ static void string_assign(string_t *key, const char *str, size_t len) {
 	assert(key);
 	assert(str);
 	// TODO: shrink very large keys
+	// static const size_t MiB = 1024 * 1024;
+	// if (key->len > MiB && len < key->len / 4) {
+	// 	/* code */
+	// }
 	if (key->len < len) {
 		key->str = xrealloc(key->str, len + 1);
 	}
@@ -109,49 +100,6 @@ static void string_free(string_t *s) {
 		memset(s, 0, sizeof(string_t));
 	}
 }
-
-typedef struct {
-	void *ptr;
-} bmap_entry;
-
-typedef struct bmap bmap;
-
-struct bmap {
-	uint8_t    tophash[BUCKET_CNT];
-	string_t   keys[BUCKET_CNT];
-	bmap_entry values[BUCKET_CNT];
-	bmap       *overflow;
-};
-
-typedef struct {
-	int32_t len;
-	int32_t cap;
-	bmap    **buckets;
-} bmap_array;
-
-// TODO: implement this (if possible)
-typedef struct {
-	// bmap **overflow;
-	// bmap **oldoverflow;
-	bmap_array *overflow;
-	bmap_array *oldoverflow;
-	bmap       *next_overflow;
-} mapextra;
-
-typedef void (*free_fn)(void*);
-
-typedef struct {
-	size_t    count;       // # live cells == size of map.
-	uint8_t   flags;
-	uint8_t   b;           // log_2 of # of buckets (can hold up to loadFactor * 2^B items)
-	uint16_t  noverflow;   // approximate number of overflow buckets; see incrnoverflow for details
-	uint32_t  hash0;       // hash seed
-	bmap      *buckets;    // array of 2^B Buckets. may be nil if count==0.
-	bmap      *oldbuckets; // previous bucket array of half the size, non-nil only when growing
-	size_t    nevacuate;   // progress counter for evacuation (buckets less than this have been evacuated)
-	mapextra  *extra;      // optional fields
-	free_fn   free;        // function to free values
-} hmap;
 
 ////////////////////////////////////////////////////////////////////////////////
 // WARN: debug only
@@ -213,15 +161,23 @@ static uint32_t hmap_gen_seed(void) {
 	return rand_uint32();
 }
 
-HEDLEY_RETURNS_NON_NULL
-static hmap *hmap_new_seed(free_fn free, uint32_t seed) {
+void hmap_init_seed(hmap *h, free_fn free, uint32_t seed) {
+	memset(h, 0, sizeof(hmap));
+	h->free = free;
+	h->hash0 = seed;
+}
+
+void hmap_init(hmap *h, free_fn free) {
+	hmap_init_seed(h, free, hmap_gen_seed());
+}
+
+hmap *hmap_new_seed(free_fn free, uint32_t seed) {
 	hmap *h = xmalloc(sizeof(hmap));
-	*h = (hmap){ .hash0 = seed, .free = free };
+	hmap_init_seed(h, free, seed);
 	return h;
 }
 
-HEDLEY_RETURNS_NON_NULL
-static hmap *hmap_new(free_fn free) {
+hmap *hmap_new(free_fn free) {
 	return hmap_new_seed(free, hmap_gen_seed());
 }
 
@@ -304,7 +260,7 @@ static inline size_t hmap_bucket_mask(uint8_t b) {
 	return hmap_bucket_shift(b) - 1;
 }
 
-static void hmap_destroy(hmap *h) {
+void hmap_destroy(hmap *h) {
 	if (h == NULL) {
 		return;
 	}
@@ -324,7 +280,7 @@ static void hmap_destroy(hmap *h) {
 }
 
 static inline uint8_t tophash(uint64_t hash) {
-	uint8_t top = (uint8_t)(hash >> (sizeof(void*)*8 - 8));
+	uint8_t top = (uint8_t)(hash >> (sizeof(uint64_t)*8 - 8));
 	if (top < MIN_TOP_HASH) {
 		top += MIN_TOP_HASH;
 	}
@@ -424,7 +380,7 @@ static void hmap_grow(hmap *h) {
 
 	if (h->extra != NULL && h->extra->overflow != NULL) {
 		// Promote current overflow buckets to the old generation.
-		if (h->extra->overflow != NULL) {
+		if (h->extra->oldoverflow != NULL) {
 			xdie("oldoverflow is not nil");
 		}
 		h->extra->oldoverflow = h->extra->overflow;
@@ -752,6 +708,8 @@ done:
 	insertb->values[inserti].ptr = value;
 }
 
+// TODO: how should we handle NULL strings ???
+// TODO: do we really need hmap_assign_strlen_impl() ???
 HEDLEY_NON_NULL(1, 2)
 void hmap_assign_strlen(hmap *h, const char *str, size_t len, void *value) {
 	assert(h);
@@ -759,6 +717,7 @@ void hmap_assign_strlen(hmap *h, const char *str, size_t len, void *value) {
 	hmap_assign_strlen_impl(h, str, len, value);
 }
 
+// TODO: how should we handle NULL strings ???
 HEDLEY_NON_NULL(1, 2)
 void hmap_assign_str(hmap *h, const char *str, void *value) {
 	assert(h);
@@ -767,9 +726,9 @@ void hmap_assign_str(hmap *h, const char *str, void *value) {
 	hmap_assign_strlen_impl(h, str, len, value);
 }
 
-static inline void hmap_set_value(void **dst, bmap_entry *e) {
+static inline void hmap_set_value(void **dst, const bmap_entry *e) {
 	if (dst) {
-		*dst = e != NULL ? e->ptr : NULL;
+		*dst = e ? e->ptr : NULL;
 	}
 }
 
@@ -778,13 +737,13 @@ static inline void hmap_not_found(void **dst) {
 }
 
 bool hmap_access_strlen(hmap *h, const char *str, size_t len, void **value) {
-	if (h == NULL || str == NULL) {
+	if (str == NULL) {
 		hmap_not_found(value);
 		return false;
 	}
 	if (h->b == 0) {
 		// One bucket table
-		bmap *b = &h->buckets[0];
+		const bmap *b = &h->buckets[0];
 		if (len < 32) {
 			for (int i = 0; i < BUCKET_CNT; i++) {
 				const string_t *k = &b->keys[i];
@@ -803,6 +762,7 @@ bool hmap_access_strlen(hmap *h, const char *str, size_t len, void **value) {
 			return false;
 		}
 		// long key, try not to do more comparisons than necessary
+		assert(len >= 32);
 		size_t keymaybe = BUCKET_CNT;
 		for (int i = 0; i < BUCKET_CNT; i++) {
 			const string_t *k = &b->keys[i];
@@ -824,6 +784,7 @@ bool hmap_access_strlen(hmap *h, const char *str, size_t len, void **value) {
 				// Two keys are potential matches. Use hash to distinguish them.
 				goto dohash;
 			}
+			keymaybe = i;
 		}
 		if (keymaybe != BUCKET_CNT) {
 			const string_t *k = &b->keys[keymaybe];
@@ -850,7 +811,6 @@ dohash:
 		}
 		bmap *oldb = &h->oldbuckets[hash&m];
 		if (!bmap_evacuated(oldb)) {
-			// printf("XXX: hit: %s\n", str);
 			b = oldb;
 		}
 	}
@@ -881,7 +841,7 @@ static HEDLEY_ALWAYS_INLINE bool hmap_delete_strlen_impl(
 	const char *str,
 	size_t len
 ) {
-	if (h == NULL || str == NULL) {
+	if (str == NULL) {
 		return false;
 	}
 	uint64_t hash = hmap_hash_str(h, str, len);
@@ -955,9 +915,29 @@ bool hmap_delete_strlen(hmap *h, const char *str, size_t len) {
 }
 
 bool hmap_delete_str(hmap *h, const char *str) {
-	size_t len = (str != NULL) ? strlen(str) : 0;
-	return hmap_delete_strlen_impl(h, str, len);
+	return hmap_delete_strlen_impl(h, str, strlen(str));
 }
+
+// type hiter struct {
+// 	key         unsafe.Pointer // Must be in first position.  Write nil to indicate iteration end (see cmd/compile/internal/walk/range.go).
+// 	elem        unsafe.Pointer // Must be in second position (see cmd/compile/internal/walk/range.go).
+// 	t           *maptype
+// 	h           *hmap
+// 	buckets     unsafe.Pointer // bucket ptr at hash_iter initialization time
+// 	bptr        *bmap          // current bucket
+// 	overflow    *[]*bmap       // keeps overflow buckets of hmap.buckets alive
+// 	oldoverflow *[]*bmap       // keeps overflow buckets of hmap.oldbuckets alive
+// 	startBucket uintptr        // bucket iteration started at
+// 	offset      uint8          // intra-bucket offset to start from during iteration (should be big enough to hold bucketCnt-1)
+// 	wrapped     bool           // already wrapped around from end of bucket array to beginning
+// 	B           uint8
+// 	i           uint8
+// 	bucket      uintptr
+// 	checkBucket uintptr
+// }
+
+// TESTS
+////////////////////////////////////////////////////////////////////////////////
 
 static const char *words[] = {
 	"overannotate",
@@ -1057,7 +1037,7 @@ typedef struct {
 	bool fail_fast;
 } test_runner;
 
-static int test_failure_count(test_runner *t) {
+static int test_failure_count(const test_runner *t) {
 	return t->failed;
 }
 
@@ -1069,11 +1049,11 @@ static void test_mark_failure(test_runner *t) {
 	}
 }
 
-static bool test_failed(test_runner *t) {
-	return t->failed > 0;
+static bool test_failed(const test_runner *t) {
+	return test_failure_count(t) > 0;
 }
 
-static int test_exit_code(test_runner *t) {
+static int test_exit_code(const test_runner *t) {
 	if (test_failed(t)) {
 		fprintf(stderr, "FAIL\n");
 		return 1;
@@ -1101,7 +1081,7 @@ static void _test_assert_count(test_runner *t, const hmap *h, size_t count,
 	}
 }
 
-static void test_dump_map(test_runner *t, hmap *h) {
+static void test_dump_map(const test_runner *t, const hmap *h) {
 	if (!t->verbose) {
 		return;
 	}
@@ -1194,7 +1174,61 @@ bool test_hmap(test_runner *t) {
 	return true;
 }
 
-static int benchmark_hmap(long N, void *data) {
+bool test_hmap_web2(test_runner *t) {
+	int len = 0;
+	int cap = 1024;
+	string_t *list = xcalloc(cap, sizeof(string_t));
+	size_t n = 0;
+	char *line = NULL;
+	FILE *f = fopen("testdata/web2", "r");
+	assert(f);
+	while (getline(&line, &n, f) > 0) {
+		if (len == cap) {
+			cap = (cap + 1) * 2;
+			list = xrealloc(list, sizeof(string_t) * cap);
+		}
+		assert(line);
+		const char *s = strdup(line);
+		assert(s);
+		string_assign(&list[len++], s, strlen(s));
+	}
+	free(line);
+	if (len == 0) {
+		terror(t, "failed to read any lines from testdata/web2\n");
+		return false;
+	}
+
+	hmap *h = hmap_new(NULL);
+	ns_time_t start = ns_time_now();
+	for (int i = 0; i < len; i++) {
+		test_assert_count(t, h, (size_t)i);
+
+		int *p = xmalloc(sizeof(int));
+		*p = i;
+		hmap_assign_strlen(h, list[i].str, list[i].len, p);
+		test_assert_value(t, h, list[i].str, p);
+		test_assert_has_key(t, h, list[i].str);
+
+		test_assert_count(t, h, (size_t)i + 1);
+	}
+
+	for (int i = 0; i < len; i++) {
+		hmap_delete_str(h, list[i].str);
+		test_assert_missing_key(t, h, list[i].str);
+		test_assert_count(t, h, len - i - 1);
+	}
+	ns_duration_t dur = ns_time_since(start);
+	printf("web: %.2fms - %zu ns/op\n", ns_duration_ms(dur), (size_t)dur/(size_t)len);
+
+	hmap_destroy(h);
+	for (int i = 0; i < len; i++) {
+		string_free(&list[i]);
+	}
+	free(list);
+	return true;
+}
+
+static int benchmark_hmap_access_fn(long N, void *data) {
 	string_t *strlist = (string_t *)data;
 
 	hmap *h = hmap_new(NULL);
@@ -1220,7 +1254,64 @@ static int benchmark_hmap(long N, void *data) {
 	return 0;
 }
 
-#define bool_str(b) (b ? "true" : false)
+static int benchmark_hmap_assign_access_delete_fn(long N, void *data) {
+	string_t *strlist = (string_t *)data;
+
+	hmap *h = hmap_new(NULL);
+
+	for (long j = 0; j < N; j++) {
+		for (int i = 0; i < words_len; i++) {
+			hmap_assign_strlen(h, strlist[i].str, strlist[i].len, NULL);
+		}
+		for (int i = 0; i < words_len; i++) {
+			if (!hmap_access_strlen(h, strlist[i].str, strlist[i].len, NULL)) {
+				return 1;
+			}
+		}
+		for (int i = 0; i < words_len; i++) {
+			hmap_delete_strlen(h, strlist[i].str, strlist[i].len);
+		}
+	}
+
+	hmap_destroy(h);
+	return 0;
+}
+
+string_t *strlist = NULL;
+
+void init_bench_strlist(void) {
+	if (strlist != NULL) {
+		return;
+	}
+	strlist = calloc(words_len, sizeof(string_t));
+	for (int i = 0; i < words_len; i++) {
+		string_assign(&strlist[i], words[i], strlen(words[i]));
+	}
+}
+
+int benchmark_hmap_access(ns_duration_t bench_dur) {
+	init_bench_strlist();
+	ns_benchmark_t result = ns_benchmark(bench_dur, benchmark_hmap_access_fn, strlist);
+	if (result.failed) {
+		fprintf(stderr, "benchmark: failed\n");
+		return 1;
+	}
+	ns_fprintf_benchmark(stdout, "hmap_access", result);
+	return 0;
+}
+
+int benchmark_hmap_assign_access_delete(ns_duration_t bench_dur) {
+	init_bench_strlist();
+	ns_benchmark_t result = ns_benchmark(bench_dur, benchmark_hmap_assign_access_delete_fn, strlist);
+	if (result.failed) {
+		fprintf(stderr, "benchmark: failed\n");
+		return 1;
+	}
+	ns_fprintf_benchmark(stdout, "hmap_assign_access_delete", result);
+	return 0;
+}
+
+// #define bool_str(b) (b ? "true" : false)
 
 int main(int argc, char const *argv[]) {
 	(void)argc;
@@ -1229,36 +1320,62 @@ int main(int argc, char const *argv[]) {
 	// WARN WARN WARN
 	srandomdev();
 
-	// bool verbose = true;
-	// test_runner t = { .verbose = verbose };
-	// test_hmap(&t);
-	// return test_exit_code(&t);
+	// const ns_duration_t bench_dur = NS_SECOND * 5;
+	const ns_duration_t bench_dur = NS_SECOND;
 
-	// int **values = xmalloc(sizeof(int) * words_len);
+	// Benchmarks
+	if (argc == 2 && strcmp(argv[1], "bench") == 0) {
+		// printf("Benchmarks:\n");
+		int exit_code = 0;
+		if (benchmark_hmap_access(bench_dur) != 0) {
+			fprintf(stderr, "FAIL: benchmark_hmap_access\n");
+			exit_code = 1;
+		}
+		if (benchmark_hmap_assign_access_delete(bench_dur) != 0) {
+			fprintf(stderr, "FAIL: benchmark_hmap_assign_access_delete\n");
+			exit_code = 1;
+		}
+		free(strlist);
+		return exit_code;
+	}
+
+	// Tests
+	bool verbose = true;
+	test_runner t = { .verbose = verbose };
+	test_hmap(&t);
+	if (test_exit_code(&t) != 0) {
+		return test_exit_code(&t);
+	}
+	test_hmap_web2(&t);
+	if (test_exit_code(&t) != 0) {
+		return test_exit_code(&t);
+	}
+
+	// // int **values = xmalloc(sizeof(int) * words_len);
+	// // for (int i = 0; i < words_len; i++) {
+	// // 	int *p = malloc(sizeof(int));
+	// // 	*p = i;
+	// // 	values[i] = p;
+	// // }
+
+	// string_t *strlist = calloc(words_len, sizeof(string_t));
 	// for (int i = 0; i < words_len; i++) {
-	// 	int *p = malloc(sizeof(int));
-	// 	*p = i;
-	// 	values[i] = p;
+	// 	string_assign(&strlist[i], words[i], strlen(words[i]));
 	// }
 
-	string_t *strlist = calloc(words_len, sizeof(string_t));
-	for (int i = 0; i < words_len; i++) {
-		string_assign(&strlist[i], words[i], strlen(words[i]));
-	}
+	// ns_benchmark_t result = ns_benchmark((ns_duration_t){SECOND}, benchmark_hmap_fn, strlist);
+	// if (result.failed) {
+	// 	fprintf(stderr, "benchmark: failed\n");
+	// 	return 1;
+	// }
 
-	ns_benchmark_t result = ns_benchmark((ns_duration_t){SECOND}, benchmark_hmap, strlist);
-	if (result.failed) {
-		fprintf(stderr, "benchmark: failed\n");
-		return 1;
-	}
+	// printf("%d: %.2fms: %zu ns/op\n", result.n, ns_duration_ms(result.d),
+	// 	(size_t)(ns_duration_ns(result.d) / (int64_t)result.n));
+	// // printf("x: %zu\n", (size_t)x);
+	// return 0;
 
-	printf("%d: %.2fms: %zu ns/op\n", result.n, ns_duration_ms(result.d),
-		(size_t)(ns_duration_ns(result.d) / (int64_t)result.n));
-	// printf("x: %zu\n", (size_t)x);
-	return 0;
-
-	free(strlist);
-	return 0;
+	// free(strlist);
+	// return 0;
 }
 
 // static const uint64_t rand_numbers[] = {

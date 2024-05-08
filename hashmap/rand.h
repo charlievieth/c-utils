@@ -1,3 +1,5 @@
+// vim: ts=4 sw=4 et
+
 #ifndef HMAP_RAND_H
 #define HMAP_RAND_H
 
@@ -18,18 +20,17 @@ uint64_t rand_source_uint64(rand_source *rng);
 // rand_source_int64 returns a random int64_t.
 int64_t rand_source_int64(rand_source *rng);
 
-// rand_seed seeds the global rand_source.
+// rand_seed seeds the global thread-safe rand_source.
 void rand_seed(int64_t seed);
 
-// rand_uint64 returns a random uint64_t using the global source.
+// rand_uint64 returns a random uint64_t using the thread-safe global source.
 uint64_t rand_uint64(void);
 
-// rand_int64 returns a random int64_t using the global source.
+// rand_int64 returns a random int64_t using the thread-safe global source.
 int64_t rand_int64(void);
 
-// rand_seed_once initialize the global rand once with a seed based
-// off of the wall time and processor clock time.
-void rand_seed_once(void);
+// rand_init_seed_once initialize the global rand_source once with a secure seed.
+void rand_init_seed_once(void);
 
 // RAND_SOURCE_INITIALIZER statically initializes a rand_source with a seed of 0.
 #define RAND_SOURCE_INITIALIZER (rand_source) {                                                     \

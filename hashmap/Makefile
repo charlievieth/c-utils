@@ -1,7 +1,7 @@
 # CC=gcc-11
 # Debug (-g creates the *.dSYM directory)
 #
-CFLAGS=-O2 -std=c11 -flto -mtune=native -g
+CFLAGS=-O3 -std=c11 -flto -mtune=native -g
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 #
@@ -78,6 +78,14 @@ debug: run clean
 
 .PHONY: run
 run: clean address
+	./$(OUT)
+
+.PHONY: bench
+bench: clean build
+	./$(OUT) bench
+
+.PHONY: test
+test: build
 	./$(OUT)
 
 .PHONE: debug_optimizations

@@ -13,7 +13,7 @@ void *xcalloc(size_t count, size_t size)
 void *xrealloc(void *ptr, size_t size)
 	HEDLEY_MALLOC HEDLEY_RETURNS_NON_NULL;
 
-HEDLEY_NO_RETURN HEDLEY_NEVER_INLINE HEDLEY_PRIVATE
+HEDLEY_PRIVATE HEDLEY_NO_RETURN HEDLEY_NEVER_INLINE
 void xdie_impl(const char *msg, const char *file, int line);
 
 #define xdie(msg) xdie_impl(msg, __FILE__, __LINE__)
