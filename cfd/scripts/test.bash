@@ -24,20 +24,20 @@ fi
 EXIT_CODE=0
 TESTNAME=''
 
-trap 'echo -e "${RED}# test:${RESET} ${YELLOW}${TESTNAME}${RESET} failed"' ERR
+trap 'echo "${RED}# test:${RESET} ${YELLOW}${TESTNAME}${RESET} failed"' ERR
 
 function _test() {
     TESTNAME="$1"
-    echo -e "${GREEN}# test:${RESET}" "$1"
+    echo "${GREEN}# test:${RESET}" "$1"
 }
 
 function _error() {
-    echo -e "${YELLOW}error:${RESET}" "$@"
+    echo "${YELLOW}error:${RESET}" "$@"
     ((EXIT_CODE++))
 }
 
 function _fatal() {
-    echo -e "${YELLOW}error:${RESET}" "$@"
+    echo "${YELLOW}error:${RESET}" "$@"
     return 1
 }
 
@@ -79,6 +79,7 @@ fd --color always --absolute-path | "${CFD}" >/dev/null
 
 # shellcheck disable=SC2016
 _test '`ls -la`'
+# shellcheck disable=SC2012
 ls -la | "${CFD}" >/dev/null
 
 # testdata/fd_sort
@@ -129,6 +130,8 @@ if command -v go >/dev/null && [[ -d "$(go env GOROOT)" ]]; then
     diff "${DIFF_FLAGS[@]}" \
         <(sed 's/^\.\///g' "${ALL_GO}" | "${PYISORT}" --ignore-case) \
         <("${CFD}" --isort <"${ALL_GO}")
+else
+    echo "${YELLOW}skip:${RESET} skipping GOROOT test: go not installed"
 fi
 
 if ((EXIT_CODE == 0)); then

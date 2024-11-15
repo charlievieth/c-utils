@@ -21,10 +21,10 @@ TESTNAME=''
 
 function _bench() {
     TESTNAME="$1"
-    echo -e "${GREEN}# bench:${RESET}" "$1"
+    echo "${GREEN}# bench:${RESET}" "$1"
 }
 
-trap 'echo -e "${RED}# test:${RESET} ${YELLOW}${TESTNAME}${RESET} failed"' ERR
+trap 'echo "${RED}# test:${RESET} ${YELLOW}${TESTNAME}${RESET} failed"' ERR
 
 make clean
 make release
