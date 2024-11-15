@@ -127,12 +127,8 @@ static void strip_ansi(char **dst, size_t *dst_len, const char *str, size_t str_
 	// All ANSI
 	if (n == 0) {
 		// WARN: all ANSI
-		if (dst_len) {
-			*dst_len = 0;
-		}
-		if (*dst) {
-			*dst[0] = '\0';
-		}
+		*dst_len = 0;
+		*dst[0] = '\0';
 		return;
 	}
 
@@ -140,19 +136,15 @@ static void strip_ansi(char **dst, size_t *dst_len, const char *str, size_t str_
 	if (n == str_len) {
 		*dst = xrealloc(*dst, str_len + 1);
 		memcpy(*dst, str, str_len + 1);
-		if (dst_len) {
-			*dst_len = str_len;
-		}
+		*dst_len = str_len;
 		return;
 	}
 
-	if (dst_len) {
-		*dst_len = n;
-	}
+	*dst_len = n;
 	*dst = xrealloc(*dst, n + 1);
 	unsigned char *d = *(unsigned char **)dst;
 
-	p = (unsigned const char *)str;
+	p = (unsigned const char *)str; // reset
 	while ((c = *p++)) {
 		if (c == '\x1b' && *p == '[') {
 			while ((c = *p++)) {
