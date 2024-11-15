@@ -45,6 +45,48 @@ static void *xrealloc(void *p, size_t n) {
 	return p;
 }
 
+typedef struct {
+	char   *line;
+	size_t line_len;
+	char   *comp;
+	size_t comp_len;
+} line_buffer;
+
+#define CONCATX(x, y)      x##y
+#define CONCAT(x, y)       CONCATX(x, y)
+#define UNIQUE_ALIAS(name) CONCAT(name, __COUNTER__)
+
+#define _line_buffer_for_each(lbuf, len, value, __p, __e)               \
+	line_buffer *(__e) = &(lbuf)[(len)];                                \
+	for ((value) = (lbuf); (value) < (__e); (value)++)
+
+#define line_buffer_for_each(lbuf, len, value)                          \
+		_line_buffer_for_each(lbuf, len, value, UNIQUE_ALIAS(__p), UNIQUE_ALIAS(__e))
+
+static void line_buffer_free(line_buffer *b) {
+	if (b && b->line) {
+		free(b->line);
+	}
+#ifndef NDEBUG
+	if (b) {
+		*b = (line_buffer){ 0 };
+	}
+#endif
+}
+
+// CEV: We can't just return `_l1 - _l2` here since we're casting to an int
+// and in the unlikely event that we have multi GB lines it will overflow.
+#define CMP_LEN(_l1, _l2) (_l1) == (_l2) ? 0 : (_l1) > (_l2) ? 1 : -1;
+
+static inline int line_buffer_compare_strings(const void* p1, const void* p2) {
+	// TODO: handle non-ASCII characters
+	const line_buffer *b1 = (const line_buffer*)p1;
+	const line_buffer *b2 = (const line_buffer*)p2;
+	int ret = memcmp(b1->comp, b2->comp, b1->comp_len < b2->comp_len
+		? b1->comp_len : b2->comp_len);
+	return ret != 0 ? ret : CMP_LEN(b1->comp_len, b2->comp_len);
+}
+
 // has_prefix returns if s starts with prefix and is optimized for small
 // prefixes (it seems that clang/gcc will still call strncmp even when the
 // string being compared to and it's length are constant).
@@ -152,48 +194,6 @@ static void strip_ansi(char **dst, size_t *dst_len, const char *str, size_t str_
 		}
 	}
 	*d = '\0';
-}
-
-typedef struct {
-	char   *line;
-	size_t line_len;
-	char   *comp;
-	size_t comp_len;
-} line_buffer;
-
-#define CONCATX(x, y)      x##y
-#define CONCAT(x, y)       CONCATX(x, y)
-#define UNIQUE_ALIAS(name) CONCAT(name, __COUNTER__)
-
-#define _line_buffer_for_each(lbuf, len, value, __p, __e)               \
-	line_buffer *(__e) = &(lbuf)[(len)];                                \
-	for ((value) = (lbuf); (value) < (__e); (value)++)
-
-#define line_buffer_for_each(lbuf, len, value)                          \
-		_line_buffer_for_each(lbuf, len, value, UNIQUE_ALIAS(__p), UNIQUE_ALIAS(__e))
-
-static void line_buffer_free(line_buffer *b) {
-	if (b && b->line) {
-		free(b->line);
-	}
-#ifndef NDEBUG
-	if (b) {
-		*b = (line_buffer){ 0 };
-	}
-#endif
-}
-
-// CEV: We can't just return `_l1 - _l2` here since we're casting to an int
-// and in the unlikely event that we have multi GB lines it will overflow.
-#define CMP_LEN(_l1, _l2) (_l1) == (_l2) ? 0 : (_l1) > (_l2) ? 1 : -1;
-
-static inline int line_buffer_compare_strings(const void* p1, const void* p2) {
-	// TODO: handle non-ASCII characters
-	const line_buffer *b1 = (const line_buffer*)p1;
-	const line_buffer *b2 = (const line_buffer*)p2;
-	int ret = memcmp(b1->comp, b2->comp, b1->comp_len < b2->comp_len
-		? b1->comp_len : b2->comp_len);
-	return ret != 0 ? ret : CMP_LEN(b1->comp_len, b2->comp_len);
 }
 
 // is_upper_c checks if c is upper case in the C locale (aka ASCII)
