@@ -13,14 +13,6 @@
 // TODO: consider using: getprogname()
 #define PROGRAM_NAME "cfd"
 
-#ifndef likely
-#define likely(x) __builtin_expect(!!(x), 1)
-#endif
-
-#ifndef unlikely
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#endif
-
 #define fmt_bool(ok) (ok) ? "true" : "false"
 
 static void __attribute__((__noreturn__)) *xalloc_die(void);
@@ -304,7 +296,7 @@ static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char
 	line_buffer *p;
 	line_buffer_for_each(lines, li, p) {
 		size_t ret = fwrite(p->line, 1, p->line_len, ostream);
-		if (unlikely(ret < p->line_len)) {
+		if (ret < p->line_len) {
 			goto fatal_error;
 		}
 	}
@@ -339,7 +331,7 @@ static int consume_stream(FILE *istream, FILE *ostream, const unsigned char deli
 		char *dst = no_strip_prefix
 			? buf
 			: trim_prefix_inplace(buf, buf_len, &dlen);
-		if (unlikely(fwrite(dst, 1, dlen, ostream) < dlen)) {
+		if (fwrite(dst, 1, dlen, ostream) < dlen) {
 			perror("fwrite");
 			goto fatal_error;
 		}
@@ -474,7 +466,7 @@ int main(int argc, char const *argv[]) {
 			invalid_flag = true;
 		}
 	}
-	if (unlikely(verbose)) {
+	if (verbose) {
 		fprintf(stderr, "# debug: command line arguments:\n");
 		fprintf(stderr, "#   null_terminate:  %s\n", fmt_bool(null_terminate));
 		fprintf(stderr, "#   no_strip_prefix: %s\n", fmt_bool(no_strip_prefix));
@@ -496,7 +488,7 @@ int main(int argc, char const *argv[]) {
 
 	const unsigned char delim = null_terminate ? 0 : '\n';
 
-	if (likely(!run_benchmarks)) {
+	if (!run_benchmarks) {
 		int exit_code = 0;
 		if (sort_lines || sort_lines_case) {
 			exit_code = consume_stream_sort(stdin, stdout, delim, sort_lines_case,
@@ -547,11 +539,11 @@ int main(int argc, char const *argv[]) {
 		for (long i = 0; i < bench_count; i++) {
 			int ret = consume_stream_sort(istream, ostream, delim, sort_lines_case,
 				no_strip_prefix);
-			if (unlikely(ret != 0)) {
+			if (ret != 0) {
 				fprintf(stderr, "consume_stream_sort\n");
 				goto bench_exit;
 			}
-			if (unlikely(fseek(istream, 0, SEEK_SET) != 0)) {
+			if (fseek(istream, 0, SEEK_SET) != 0) {
 				perror("fseek");
 				goto bench_exit;
 			}
@@ -559,11 +551,11 @@ int main(int argc, char const *argv[]) {
 	} else {
 		for (long i = 0; i < bench_count; i++) {
 			int ret = consume_stream(istream, ostream, delim, no_strip_prefix);
-			if (unlikely(ret != 0)) {
+			if (ret != 0) {
 				fprintf(stderr, "consume_stream\n");
 				goto bench_exit;
 			}
-			if (unlikely(fseek(istream, 0, SEEK_SET) != 0)) {
+			if (fseek(istream, 0, SEEK_SET) != 0) {
 				perror("fseek");
 				goto bench_exit;
 			}
