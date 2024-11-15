@@ -191,8 +191,6 @@ static void line_buffer_free(line_buffer *b) {
 #endif
 }
 
-static_assert(sizeof(int) == 4, "WAT ");
-
 // CEV: We can't just return `_l1 - _l2` here since we're casting to an int
 // and in the unlikely event that we have multi GB lines it will overflow.
 #define CMP_LEN(_l1, _l2) (_l1) == (_l2) ? 0 : (_l1) > (_l2) ? 1 : -1;
