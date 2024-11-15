@@ -1,9 +1,4 @@
-# CC=gcc-11
-# CC=fake-gcc
-# Debug (-g creates the *.dSYM directory)
-
-# TODO: build with -DNDEBUG
-
+CC=cc
 CFLAGS=-O2 -g -std=c11 -mtune=native
 
 # Add -march=native for non-arm64 platforms
@@ -18,22 +13,20 @@ ifeq ($(UNAME_S),Linux)
 	CFLAGS+=-D_GNU_SOURCE
 endif
 
-#
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 #
 CFLAGS+=-Wall -Wextra -Wpedantic -pedantic-errors -Wshadow
 CFLAGS+=-Wswitch-enum -Wcast-qual -Wpointer-arith
 CFLAGS+=-Wstrict-overflow=5 -Wcast-align
 CFLAGS+=-Wno-gnu-zero-variadic-macro-arguments
-# CFLAGS+=-Wbool-compare
-#
+
 # Performance:
 #
 CFLAGS+=-Winline -Wdisabled-optimization
+
+# Experimental (GCC only)
 #
-# Experimental
-#
-CFLAGS+=-Wstring-compare
+# CFLAGS+=-Wstring-compare
 # CFLAGS+=-Wsuggest-attribute=pure
 # CFLAGS+=-Wsuggest-attribute=const
 # CFLAGS+=-Wsuggest-attribute=noreturn
@@ -46,22 +39,6 @@ CFLAGS+=-Wunused-macros
 # CFLAGS+=-Wrestrict
 CFLAGS+=-Wnull-dereference
 
-#
-# Memory sanitizer:
-#
-# CFLAGS+=-fsanitize=address
-#
-# UB sanitizer:
-#
-# CFLAGS+=-fsanitize=undefined
-#
-# Race detector:
-#
-# CFLAGS+=-fsanitize=thread
-#
-# Stack protector flags:
-# CFLAGS+=-fstack-protector-strong -fstack-check -fstack-protector
-#
 OUT=cfd
 RM=rm -rfv
 
