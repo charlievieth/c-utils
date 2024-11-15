@@ -83,13 +83,16 @@ ls -la | "${CFD}" >/dev/null
 
 # testdata/fd_sort
 
-FD_TEST="$(cd "${DIR}/testdata/fd_test" && fd --color always | LC_ALL=C sort --random-sort)"
+FD_TEST="$(cd "${DIR}/testdata/fd_test" && fd --color always |
+    LC_ALL=C sort --random-sort)"
 
 _test 'sort'
-diff "${DIR}/testdata/fd_test/want_sort.out" <(echo "${FD_TEST}" | "${CFD}" --sort) || _error "failed: ${TESTNAME}"
+diff "${DIR}/testdata/fd_test/want_sort.out" <(echo "${FD_TEST}" |
+    "${CFD}" --sort) || _error "failed: ${TESTNAME}"
 
 _test 'isort'
-diff "${DIR}/testdata/fd_test/want_isort.out" <(echo "${FD_TEST}" | "${CFD}" --isort) || _error "failed: ${TESTNAME}"
+diff "${DIR}/testdata/fd_test/want_isort.out" <(echo "${FD_TEST}" |
+    "${CFD}" --isort) || _error "failed: ${TESTNAME}"
 
 # GOROOT
 
