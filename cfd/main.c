@@ -76,7 +76,7 @@ static void line_buffer_free(line_buffer *b) {
 
 // CEV: We can't just return `_l1 - _l2` here since we're casting to an int
 // and in the unlikely event that we have multi GB lines it will overflow.
-#define CMP_LEN(_l1, _l2) (_l1) == (_l2) ? 0 : (_l1) > (_l2) ? 1 : -1;
+#define CMP_LEN(_l1, _l2) (_l1) == (_l2) ? 0 : (_l1) > (_l2) ? 1 : -1
 
 static inline int line_buffer_compare_strings(const void* p1, const void* p2) {
 	// TODO: handle non-ASCII characters
