@@ -21,6 +21,7 @@ else
     YELLOW=''
     RESET=''
 fi
+EXIT_CODE=0
 TESTNAME=''
 
 trap 'echo -e "${RED}# test:${RESET} ${YELLOW}${TESTNAME}${RESET} failed"' ERR
@@ -30,21 +31,22 @@ function _test() {
     echo -e "${GREEN}# test:${RESET}" "$1"
 }
 
-function _fail() {
+function _error() {
     echo -e "${YELLOW}error:${RESET}" "$@"
+    ((EXIT_CODE++))
 }
 
-function _error() {
+function _fatal() {
     echo -e "${YELLOW}error:${RESET}" "$@"
     return 1
 }
 
 [[ ! -x "${PYISORT}" ]] && {
-    _error "missing pyisort.py: ${PYISORT}"
+    _fatal "missing pyisort.py: ${PYISORT}"
 }
 
 if ! command -v fd >/dev/null; then
-    _error 'missing required command: fd'
+    _fatal 'missing required command: fd'
 fi
 
 _test 'build'
@@ -56,7 +58,7 @@ else
     CFD="${DIR}/cfd"
 fi
 [[ ! -x "${CFD}" ]] && {
-    _error "missing cfd executable: ${CFD}"
+    _fatal "missing cfd executable: ${CFD}"
 }
 
 # shellcheck disable=SC2016
@@ -84,10 +86,10 @@ ls -la | "${CFD}" >/dev/null
 FD_TEST="$(cd "${DIR}/testdata/fd_test" && fd --color always | LC_ALL=C sort --random-sort)"
 
 _test 'sort'
-diff "${DIR}/testdata/fd_test/want_sort.out" <(echo "${FD_TEST}" | "${CFD}" --sort) || _fail "failed: ${TESTNAME}"
+diff "${DIR}/testdata/fd_test/want_sort.out" <(echo "${FD_TEST}" | "${CFD}" --sort) || _error "failed: ${TESTNAME}"
 
 _test 'isort'
-diff "${DIR}/testdata/fd_test/want_isort.out" <(echo "${FD_TEST}" | "${CFD}" --isort) || _fail "failed: ${TESTNAME}"
+diff "${DIR}/testdata/fd_test/want_isort.out" <(echo "${FD_TEST}" | "${CFD}" --isort) || _error "failed: ${TESTNAME}"
 
 # GOROOT
 
@@ -109,9 +111,11 @@ if command -v go >/dev/null && [[ -d "$(go env GOROOT)" ]]; then
     trap 'rm "${ALL_GO}" "${ALL_GO_COLOR}"' EXIT
 
     _test 'GOROOT: no-sort (comp)'
-    diff "${DIFF_FLAGS[@]}" \
+    if ! diff "${DIFF_FLAGS[@]}" \
         <(sed -E 's/\x1b\[.*\.\/\x1b\[0m|\.\///g' "${ALL_GO_COLOR}" | sort) \
-        <("${CFD}" <"${ALL_GO_COLOR}" | sort)
+        <("${CFD}" <"${ALL_GO_COLOR}" | sort); then
+        _error 'FAIl'
+    fi
 
     _test 'GOROOT: sort (comp)'
     diff "${DIFF_FLAGS[@]}" \
@@ -124,4 +128,9 @@ if command -v go >/dev/null && [[ -d "$(go env GOROOT)" ]]; then
         <("${CFD}" --isort <"${ALL_GO}")
 fi
 
-_test 'passed'
+if ((EXIT_CODE == 0)); then
+    _test 'PASS'
+else
+    _error "FAIL: ${EXIT_CODE} tests failed"
+fi
+exit $EXIT_CODE
