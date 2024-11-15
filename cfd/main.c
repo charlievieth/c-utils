@@ -3,20 +3,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <unistd.h>
-#include <stdbool.h>
 #include <assert.h>
 #include <time.h>
 
 // TODO: consider using: getprogname()
 #define PROGRAM_NAME "cfd"
 
+#ifndef likely
+#define likely(x) __builtin_expect(!!(x), 1)
+#endif
+
 #ifndef unlikely
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #endif
+
+#define fmt_bool(ok) (ok) ? "true" : "false"
 
 static void __attribute__((__noreturn__)) *xalloc_die(void);
 static void __attribute__((__malloc__)) *xmalloc(size_t n);
@@ -48,15 +53,20 @@ static void *xrealloc(void *p, size_t n) {
 	return p;
 }
 
-#if !defined(SIZE_T_MAX) && !defined(SIZE_MAX)
-#error "missing SIZE_T_MAX and SIZE_MAX"
-#endif
+// has_prefix returns if s starts with prefix and is optimized for small
+// prefixes (it seems that clang/gcc will still call strncmp even when the
+// string being compared to and it's length are constant).
+static inline bool has_prefix(const char *s, const char *prefix) {
+	// computed at compile time if inlined at O3 for gcc and O2+ for clang
+	const int n = strlen(prefix);
+	for (int i = 0; i < n; i++) {
+		if (s[i] != prefix[i]) {
+			return false;
+		}
+	}
+	return true;
+}
 
-#ifndef SSIZE_MAX
-#define SSIZE_MAX PTRDIFF_MAX
-#endif
-
-// WARN: use or remove
 static char *trim_prefix_inplace(char *buf, size_t buf_len, size_t *new_len) {
 	if (buf_len > 2) {
 		if (memcmp(buf, "./", 2) == 0) {
@@ -67,15 +77,15 @@ static char *trim_prefix_inplace(char *buf, size_t buf_len, size_t *new_len) {
 			const char *p = memchr(buf, 'm', buf_len);
 			if (p) {
 				ssize_t i = p - buf + 1;
-				if (strncmp(&buf[i], "./\x1b[0m", strlen("./\x1b[0m")) == 0) {
+				if (has_prefix(&buf[i], "./\x1b[0m")) {
 					i += strlen("./\x1b[0m");
 					*new_len = buf_len - i;
 					return &buf[i];
 				}
-				if (strncmp(&buf[i], "./", strlen("./")) == 0) {
-					memmove(&buf[i], &buf[i + 2], buf_len - i - 1);
-					*new_len = buf_len - 2;
-					return buf;
+				if (has_prefix(&buf[i], "./")) {
+					i += 2; // strlen("./")
+					*new_len = buf_len - i;
+					return &buf[i];
 				}
 			}
 		}
@@ -84,7 +94,6 @@ static char *trim_prefix_inplace(char *buf, size_t buf_len, size_t *new_len) {
 	return buf;
 }
 
-// TODO: use of remove
 static inline bool contains_ansi_escape_code(const char *str, size_t str_len) {
 	const size_t esc_len = strlen("\x1b[");
 
@@ -164,7 +173,7 @@ typedef struct {
 	char   *line;
 	size_t line_len;
 	char   *comp;
-	size_t comp_len; // WARN
+	size_t comp_len;
 } line_buffer;
 
 #define CONCATX(x, y)      x##y
@@ -178,17 +187,6 @@ typedef struct {
 #define line_buffer_for_each(lbuf, len, value)                          \
 		_line_buffer_for_each(lbuf, len, value, UNIQUE_ALIAS(__p), UNIQUE_ALIAS(__e))
 
-#define for_each_if(condition) if (!(condition)) {} else
-
-#define _line_bufferp_for_each(pbuf, plen, value, __p, __e)             \
-	line_buffer **(__p) = (pbuf);                                       \
-	line_buffer *const *(__e) = &(pbuf)[(plen)];                        \
-	while ((__p) < (__e))                                               \
-		for_each_if((value = *(__p++)) || true)
-
-#define line_bufferp_for_each(pbuf, plen, value)                        \
-		_line_bufferp_for_each(pbuf, plen, value, UNIQUE_ALIAS(__p), UNIQUE_ALIAS(__e))
-
 static void line_buffer_free(line_buffer *b) {
 	if (b && b->line) {
 		free(b->line);
@@ -200,33 +198,15 @@ static void line_buffer_free(line_buffer *b) {
 #endif
 }
 
-static line_buffer **line_buffer_to_ptr(line_buffer *in, size_t in_len) {
-	assert(in_len > 0);
-	if (in_len == 0) {
-		return NULL;
-	}
+#define CMP_LEN(_l1, _l2) (_l1) == (_l2) ? 0 : (_l1) > (_l2) ? 1 : -1;
 
-	line_buffer **plines = xmalloc(sizeof(line_buffer*) * in_len);
-	line_buffer **p = plines;
-	line_buffer *v;
-	line_buffer_for_each(in, in_len, v) {
-		*p++ = v;
-	}
-
-#ifndef NDEBUG
-	assert(plines[0] == &in[0]);
-	assert(plines[in_len-1] == &in[in_len-1]);
-#endif
-	return plines;
-}
-
-// TODO: use strcoll if non-ASCII chars are present
 static inline int line_buffer_compare_strings(const void* p1, const void* p2) {
-    const line_buffer *b1 = *(const line_buffer* const*)p1;
-    const line_buffer *b2 = *(const line_buffer* const*)p2;
-    int ret = memcmp(b1->comp, b2->comp, b1->comp_len < b2->comp_len
-    	? b1->comp_len : b2->comp_len);
-    return ret != 0 ? ret : (ssize_t)b1->comp_len - (ssize_t)b2->comp_len;
+	// TODO: handle non-ASCII characters
+	const line_buffer *b1 = (const line_buffer*)p1;
+	const line_buffer *b2 = (const line_buffer*)p2;
+	int ret = memcmp(b1->comp, b2->comp, b1->comp_len < b2->comp_len
+		? b1->comp_len : b2->comp_len);
+	return ret != 0 ? ret : CMP_LEN(b1->comp_len, b2->comp_len);
 }
 
 static bool has_upper_case_chars(char *s, size_t n) {
@@ -253,20 +233,22 @@ static void str_to_lower(char *s, size_t n) {
 	}
 }
 
-static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char delim, bool ignore_case) {
+static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char delim,
+                               bool ignore_case, bool no_strip_prefix) {
 	size_t buf_cap = 128;
 	size_t line_cap = 8;
 	char *buf = xmalloc(128);
 	char *comp = xmalloc(128);
 	line_buffer *lines = xmalloc(sizeof(line_buffer) * line_cap);
-	line_buffer **plines = NULL;
 	size_t li = 0;
 
 	bool has_ansi = false;
 	ssize_t buf_len;
 	while ((buf_len = getdelim(&buf, &buf_cap, delim, istream)) != -1) {
-		size_t dlen;
-		char *dst = trim_prefix_inplace(buf, buf_len, &dlen);
+		size_t dlen = buf_len;
+		char *dst = no_strip_prefix
+			? buf
+			: trim_prefix_inplace(buf, buf_len, &dlen);
 		if (!has_ansi) {
 			has_ansi = contains_ansi_escape_code(dst, dlen);
 		}
@@ -288,7 +270,7 @@ static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char
 			line->line = xmalloc(dlen + comp_len + 2);
 			line->line_len = dlen;
 			line->comp = &line->line[dlen + 1];
-			line->comp_len = comp_len; // WARN
+			line->comp_len = comp_len;
 			memcpy(line->line, dst, dlen + 1);
 			memcpy(line->comp, comp, comp_len + 1);
 		} else {
@@ -304,8 +286,8 @@ static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char
 				line->line = xmalloc(dlen + 1);
 				memcpy(line->line, dst, dlen + 1);
 				line->line_len = dlen;
-				line->comp = line->line; // WARN: sharing pointers
-				line->comp_len = dlen; // WARN
+				line->comp = line->line; // NB: sharing pointers
+				line->comp_len = dlen;
 			}
 		}
 	}
@@ -319,14 +301,13 @@ static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char
 		goto exit_cleanup;
 	}
 
-	plines = line_buffer_to_ptr(lines, li);
 	// NB: I tried using an inlined version of glibc's qsort but this is faster.
-	qsort(plines, li, sizeof(line_buffer *), line_buffer_compare_strings);
+	qsort(lines, li, sizeof(line_buffer), line_buffer_compare_strings);
 
 	line_buffer *p;
-	line_bufferp_for_each(plines, li, p) {
-		ssize_t ret = fwrite(p->line, 1, p->line_len, ostream);
-		if (unlikely(ret < (ssize_t)p->line_len)) {
+	line_buffer_for_each(lines, li, p) {
+		size_t ret = fwrite(p->line, 1, p->line_len, ostream);
+		if (unlikely(ret < p->line_len)) {
 			perror("fwrite");
 			goto fatal_error;
 		}
@@ -337,9 +318,6 @@ exit_cleanup:
 	fflush(stdout);
 	free(buf);
 	free(comp);
-	if (plines) {
-		free(plines);
-	}
 	// TODO: measure how long it takes to free lines
 	if (li > 0) {
 		line_buffer_for_each(lines, li, p) {
@@ -350,22 +328,22 @@ exit_cleanup:
 	return 0;
 
 fatal_error:
-	fprintf(stderr, "fatal error");
+	fprintf(stderr, PROGRAM_NAME": fatal error\n");
 	return 1;
 }
 
-static int consume_stream(FILE *istream, FILE *ostream, const unsigned char delim) {
+static int consume_stream(FILE *istream, FILE *ostream, const unsigned char delim,
+                          bool no_strip_prefix) {
 	size_t buf_cap = 128;
 	char *buf = xmalloc(128);
 
 	ssize_t buf_len;
 	while ((buf_len = getdelim(&buf, &buf_cap, delim, istream)) != -1) {
-		size_t dlen;
-		char *dst = trim_prefix_inplace(buf, buf_len, &dlen);
-		if (unlikely(dlen < 0)) {
-			goto fatal_error;
-		}
-		if (unlikely((ssize_t)fwrite(dst, 1, dlen, ostream) < (ssize_t)dlen)) {
+		size_t dlen = buf_len;
+		char *dst = no_strip_prefix
+			? buf
+			: trim_prefix_inplace(buf, buf_len, &dlen);
+		if (unlikely(fwrite(dst, 1, dlen, ostream) < dlen)) {
 			perror("fwrite");
 			goto fatal_error;
 		}
@@ -381,7 +359,7 @@ static int consume_stream(FILE *istream, FILE *ostream, const unsigned char deli
 	return 0;
 
 fatal_error:
-	fprintf(stderr, "fatal error");
+	fprintf(stderr, PROGRAM_NAME": fatal error\n");
 	return 1;
 }
 
@@ -392,14 +370,25 @@ static void print_usage(bool print_error) {
 	} else {
 		printf("Usage: %s [OPTION]... [FILE]...\n", PROGRAM_NAME);
 		fputs("\n\
-Strip './' filename prefixes from the output of fd (fd-find).\n\
+Clean and sort ANSI colorized input and write it to standard output.\n\
+\n\
+By default cfd will strip the './' filename prefix from each line of\n\
+input (unless the --no-strip flag is provided) and will optionally\n\
+sort the output. When sorting only the text is taken into consideration\n\
+(ANSI escape codes are ignored).\n\
+\n\
+For historical context this program was originally written to process\n\
+the colorized output of fd (fd-find), but has since evolved into a\n\
+general \"sort\" program that can correctly handle ANSI encoded text by\n\
+only using the text itself in comparisons (ignoring the ANSI sequences).\n\
 \n\
 Options:\n\
-  -0, --print0  Line delimiter is NUL, not newline\n\
-  -s, --sort    Sort lines before printing\n\
-  -i, --isort   Sort lines case-insensitive before printing\n\
-  -v, --verbose Print debug information\n\
-  -h, --help    Print this help message and exit.\n", stdout);
+  -0, --print0   Line delimiter is NUL, not newline\n\
+  -s, --sort     Sort lines before printing\n\
+  -i, --isort    Sort lines case-insensitive before printing\n\
+  -n, --no-strip Do not strip leading './' from input\n\
+  -v, --verbose  Print debug information\n\
+  -h, --help     Print this help message and exit.\n", stdout);
 	}
 }
 
@@ -417,10 +406,10 @@ static int64_t timespec_nanos(struct timespec ts) {
 	return (sec * 1e9) + nsec;
 }
 
-// static ssize_t trim_prefix(char **dst, size_t *dst_cap, const char *buf, const size_t buf_len) {
 int main(int argc, char const *argv[]) {
 	// TODO: use a MODE bitmask or something
 	bool null_terminate = false;
+	bool no_strip_prefix = false;
 	bool sort_lines = false;
 	bool sort_lines_case = false;
 	bool invalid_flag = false;
@@ -431,6 +420,9 @@ int main(int argc, char const *argv[]) {
 	char *bench_filename = NULL;
 	long bench_count = 10;
 
+	// CEV: getopt is awful and I don't want to add the slightly better popt
+	// (or anything else) as a dependency so what follows is some very basic
+	// arg parsing.
 	for (int i = 1; i < argc; i++) {
 		if (arg_equal(argv[i], "-0", "--print0")) {
 			if (null_terminate) {
@@ -453,6 +445,13 @@ int main(int argc, char const *argv[]) {
 				invalid_flag = true;
 			}
 			sort_lines_case = true;
+		} else if (arg_equal(argv[i], "-n", "--no-strip")) {
+			if (no_strip_prefix) {
+				fprintf(stderr,"%s: do not strip leading './' flag ['-n', '--no-strip'] specified twice\n",
+					PROGRAM_NAME);
+				invalid_flag = true;
+			}
+			no_strip_prefix = true;
 		} else if (arg_equal(argv[i], "-v", "--verbose")) {
 			verbose = true;
 		} else if (arg_equal(argv[i], "-h", "--help")) {
@@ -481,21 +480,18 @@ int main(int argc, char const *argv[]) {
 		}
 	}
 	if (unlikely(verbose)) {
-		#define format_bool(ok) (ok) ? "true" : "false"
-
 		fprintf(stderr, "# debug: command line arguments:\n");
-		fprintf(stderr, "#   null_terminate: %s\n", format_bool(null_terminate));
-		fprintf(stderr, "#   sort_lines: %s\n", format_bool(sort_lines));
-		fprintf(stderr, "#   sort_lines_case: %s\n", format_bool(sort_lines_case));
-		fprintf(stderr, "#   invalid_flag: %s\n", format_bool(invalid_flag));
-		fprintf(stderr, "#   print_help: %s\n", format_bool(print_help));
-		fprintf(stderr, "#   verbose: %s\n", format_bool(verbose));
-		fprintf(stderr, "#   run_benchmarks: %s\n", format_bool(run_benchmarks));
-		fprintf(stderr, "#   bench_filename: %s\n", bench_filename ? bench_filename : "NULL");
-		fprintf(stderr, "#   bench_count: %li\n", bench_count);
+		fprintf(stderr, "#   null_terminate:  %s\n", fmt_bool(null_terminate));
+		fprintf(stderr, "#   no_strip_prefix: %s\n", fmt_bool(no_strip_prefix));
+		fprintf(stderr, "#   sort_lines:      %s\n", fmt_bool(sort_lines));
+		fprintf(stderr, "#   sort_lines_case: %s\n", fmt_bool(sort_lines_case));
+		fprintf(stderr, "#   invalid_flag:    %s\n", fmt_bool(invalid_flag));
+		fprintf(stderr, "#   print_help:      %s\n", fmt_bool(print_help));
+		fprintf(stderr, "#   verbose:         %s\n", fmt_bool(verbose));
+		fprintf(stderr, "#   run_benchmarks:  %s\n", fmt_bool(run_benchmarks));
+		fprintf(stderr, "#   bench_filename:  %s\n", bench_filename ? bench_filename : "NULL");
+		fprintf(stderr, "#   bench_count:     %li\n", bench_count);
 		fprintf(stderr, "\n");
-
-		#undef format_bool
 	}
 	if (invalid_flag || print_help) {
 		free(bench_filename);
@@ -505,82 +501,13 @@ int main(int argc, char const *argv[]) {
 
 	const unsigned char delim = null_terminate ? 0 : '\n';
 
-	if (run_benchmarks) {
-		struct timespec start;
-		FILE *ostream = NULL;
-		int exit_code = 1;
-
-		FILE *istream = fopen(bench_filename, "r");
-		if (!istream) {
-			perror("fopen (bench file)");
-			goto bench_exit;
-		}
-
-		// Get file size
-		if (fseek(istream, 0, SEEK_END) != 0) {
-			perror("fseek (bench file)");
-			goto bench_exit;
-		}
-		const int64_t file_bytes = ftello(istream);
-		if (fseek(istream, 0, SEEK_SET) != 0) {
-			perror("fseek (bench file)");
-			goto bench_exit;
-		}
-		const double file_mbs = (double)file_bytes / (double)(1024 * 1024);
-		fprintf(stderr, "benchmark: n: %li file: %s size: %.2f\n",
-				bench_count, bench_filename, file_mbs);
-
-		timespec_get(&start, TIME_UTC);
-
-		ostream = fopen("/dev/null", "w");
-		if (!ostream) {
-			perror("fopen (/dev/null)");
-			goto bench_exit;
-		}
-
+	if (likely(!run_benchmarks)) {
+		int exit_code = 0;
 		if (sort_lines || sort_lines_case) {
-			for (long i = 0; i < bench_count; i++) {
-				int ret = consume_stream_sort(istream, ostream, delim, sort_lines_case);
-				if (unlikely(ret != 0)) {
-					fprintf(stderr, "consume_stream_sort\n");
-					goto bench_exit;
-				}
-				if (unlikely(fseek(istream, 0, SEEK_SET) != 0)) {
-					perror("fseek");
-					goto bench_exit;
-				}
-			}
+			exit_code = consume_stream_sort(stdin, stdout, delim, sort_lines_case,
+				no_strip_prefix);
 		} else {
-			for (long i = 0; i < bench_count; i++) {
-				int ret = consume_stream(istream, ostream, delim);
-				if (unlikely(ret != 0)) {
-					fprintf(stderr, "consume_stream\n");
-					goto bench_exit;
-				}
-				if (unlikely(fseek(istream, 0, SEEK_SET) != 0)) {
-					perror("fseek");
-					goto bench_exit;
-				}
-			}
-		}
-
-		struct timespec end;
-		timespec_get(&end, TIME_UTC);
-
-		// ns and secs are total
-		int64_t ns = timespec_nanos(end) - timespec_nanos(start);
-		double secs = (double)(ns / 1e9);
-		fprintf(stderr, "duration:   %.3fs\n", secs);
-		fprintf(stderr, "average:    %.3fs\n", secs/(double)bench_count);
-		fprintf(stderr, "throughput: %.3f MB/s\n", (1 / secs) * (file_mbs * (double)bench_count));
-		exit_code = 0;
-
-bench_exit:
-		if (istream) {
-			fclose(istream);
-		}
-		if (ostream) {
-			fclose(ostream);
+			exit_code = consume_stream(stdin, stdout, delim, no_strip_prefix);
 		}
 		if (bench_filename) {
 			free(bench_filename);
@@ -588,11 +515,83 @@ bench_exit:
 		return exit_code;
 	}
 
-	int exit_code = 0;
+	// Run benchmarks
+	struct timespec start;
+	FILE *ostream = NULL;
+	int exit_code = 1;
+
+	FILE *istream = fopen(bench_filename, "r");
+	if (!istream) {
+		perror("fopen (bench file)");
+		goto bench_exit;
+	}
+
+	// Get file size
+	if (fseek(istream, 0, SEEK_END) != 0) {
+		perror("fseek (bench file)");
+		goto bench_exit;
+	}
+	const int64_t file_bytes = ftello(istream);
+	if (fseek(istream, 0, SEEK_SET) != 0) {
+		perror("fseek (bench file)");
+		goto bench_exit;
+	}
+	const double file_mbs = (double)file_bytes / (double)(1024 * 1024);
+	fprintf(stderr, "benchmark: n: %li file: %s size: %.2f\n",
+			bench_count, bench_filename, file_mbs);
+
+	timespec_get(&start, TIME_UTC);
+
+	ostream = fopen("/dev/null", "w");
+	if (!ostream) {
+		perror("fopen (/dev/null)");
+		goto bench_exit;
+	}
+
 	if (sort_lines || sort_lines_case) {
-		exit_code = consume_stream_sort(stdin, stdout, delim, sort_lines_case);
+		for (long i = 0; i < bench_count; i++) {
+			int ret = consume_stream_sort(istream, ostream, delim, sort_lines_case,
+				no_strip_prefix);
+			if (unlikely(ret != 0)) {
+				fprintf(stderr, "consume_stream_sort\n");
+				goto bench_exit;
+			}
+			if (unlikely(fseek(istream, 0, SEEK_SET) != 0)) {
+				perror("fseek");
+				goto bench_exit;
+			}
+		}
 	} else {
-		exit_code = consume_stream(stdin, stdout, delim);
+		for (long i = 0; i < bench_count; i++) {
+			int ret = consume_stream(istream, ostream, delim, no_strip_prefix);
+			if (unlikely(ret != 0)) {
+				fprintf(stderr, "consume_stream\n");
+				goto bench_exit;
+			}
+			if (unlikely(fseek(istream, 0, SEEK_SET) != 0)) {
+				perror("fseek");
+				goto bench_exit;
+			}
+		}
+	}
+
+	struct timespec end;
+	timespec_get(&end, TIME_UTC);
+
+	// ns and secs are total
+	int64_t ns = timespec_nanos(end) - timespec_nanos(start);
+	double secs = (double)(ns / 1e9);
+	fprintf(stderr, "duration:   %.3fs\n", secs);
+	fprintf(stderr, "average:    %.3fs\n", secs/(double)bench_count);
+	fprintf(stderr, "throughput: %.3f MB/s\n", (1 / secs) * (file_mbs * (double)bench_count));
+	exit_code = 0;
+
+bench_exit:
+	if (istream) {
+		fclose(istream);
+	}
+	if (ostream) {
+		fclose(ostream);
 	}
 	if (bench_filename) {
 		free(bench_filename);
