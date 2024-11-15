@@ -191,6 +191,10 @@ static void line_buffer_free(line_buffer *b) {
 #endif
 }
 
+static_assert(sizeof(int) == 4, "WAT ");
+
+// CEV: We can't just return `_l1 - _l2` here since we're casting to an int
+// and in the unlikely event that we have multi GB lines it will overflow.
 #define CMP_LEN(_l1, _l2) (_l1) == (_l2) ? 0 : (_l1) > (_l2) ? 1 : -1;
 
 static inline int line_buffer_compare_strings(const void* p1, const void* p2) {
@@ -202,12 +206,18 @@ static inline int line_buffer_compare_strings(const void* p1, const void* p2) {
 	return ret != 0 ? ret : CMP_LEN(b1->comp_len, b2->comp_len);
 }
 
+// is_upper_c checks if c is upper case in the C locale (aka ASCII)
+// this avoids the whole mess that is isuppper and all of its locale
+// based tables and other related fun.
+static inline bool is_upper_c(const unsigned char c) {
+	return 'A' <= c && c <= 'Z';
+}
+
 static bool has_upper_case_chars(char *s, size_t n) {
 	const unsigned char *end = (const unsigned char *)(&s[n]);
 	unsigned char *p = (unsigned char *)s;
 	while (p < end) {
-		unsigned char c = *p++;
-		if ('A' <= c && c <= 'Z') {
+		if (is_upper_c(*p++)) {
 			return true;
 		}
 	}
@@ -218,8 +228,7 @@ static void str_to_lower(char *s, size_t n) {
 	const unsigned char *end = (const unsigned char *)(&s[n]);
 	unsigned char *p = (unsigned char *)s;
 	while (p < end) {
-		unsigned char c = *p;
-		if ('A' <= c && c <= 'Z') {
+		if (is_upper_c(*p)) {
 			*p += 'a' - 'A';
 		}
 		p++;
@@ -357,11 +366,10 @@ static void print_usage(bool print_error) {
 		fprintf(stderr, "Usage: %s [OPTION]...\n", PROGRAM_NAME);
 		fprintf(stderr, "Try '%s --help' for more information.\n", PROGRAM_NAME);
 	} else {
-		printf("Usage: %s [OPTION]... [FILE]...\n", PROGRAM_NAME);
-		fputs("\n\
+		fputs("Usage: "PROGRAM_NAME" [OPTION]... [FILE]...\n\n\
 Clean and sort ANSI colorized input and write it to standard output.\n\
 \n\
-By default cfd will strip the './' filename prefix from each line of\n\
+By default "PROGRAM_NAME" will strip the './' filename prefix from each line of\n\
 input (unless the --no-strip flag is provided) and will optionally\n\
 sort the output. When sorting only the text is taken into consideration\n\
 (ANSI escape codes are ignored).\n\
