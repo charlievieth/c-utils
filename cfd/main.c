@@ -83,9 +83,10 @@ static char *trim_prefix_inplace(char *buf, size_t buf_len, size_t *new_len) {
 					return &buf[i];
 				}
 				if (has_prefix(&buf[i], "./")) {
-					i += 2; // strlen("./")
-					*new_len = buf_len - i;
-					return &buf[i];
+					// Overwrite './' with the ANSI escape code
+					memmove(&buf[2], buf, i);
+					*new_len = buf_len - 2;
+					return &buf[2];
 				}
 			}
 		}
@@ -292,9 +293,6 @@ static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char
 		}
 	}
 	if (ferror(stdin)) {
-		if (errno != 0) {
-			perror("getdelim");
-		}
 		goto fatal_error;
 	}
 	if (li == 0) {
@@ -308,7 +306,6 @@ static int consume_stream_sort(FILE *istream, FILE *ostream, const unsigned char
 	line_buffer_for_each(lines, li, p) {
 		size_t ret = fwrite(p->line, 1, p->line_len, ostream);
 		if (unlikely(ret < p->line_len)) {
-			perror("fwrite");
 			goto fatal_error;
 		}
 	}
@@ -328,7 +325,7 @@ exit_cleanup:
 	return 0;
 
 fatal_error:
-	fprintf(stderr, PROGRAM_NAME": fatal error\n");
+	fprintf(stderr, PROGRAM_NAME": fatal error: %s\n", strerror(errno));
 	return 1;
 }
 
